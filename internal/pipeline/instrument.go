@@ -107,7 +107,11 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		}
 	}
 
-	if _, dbErr := a.db.InsertAgentInvocation(inv); dbErr != nil {
+	// The invocation already finished (including a cancelled one, recorded with
+	// ExitStatus "cancelled"), so its durable record and coupled event must not
+	// be aborted by the same cancellation that ended it. Detach the write from
+	// caller cancellation while keeping context values.
+	if dbErr := a.db.InsertAgentInvocationWithEvent(context.WithoutCancel(ctx), inv); dbErr != nil {
 		slog.Warn("failed to record agent invocation", "step", a.stepName, "error", dbErr)
 	}
 }

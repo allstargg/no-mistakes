@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -87,6 +88,17 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 // span construction; no parent means that instrumentation should create an
 // independent trace.
 func (d *DB) InsertRunWithTraceContext(repoID, branch, headSHA, baseSHA string, traceCtx *tracecontext.Context) (*Run, error) {
+	r := newRunRecord(repoID, branch, headSHA, baseSHA, traceCtx)
+	if err := insertRunExec(context.Background(), d.sql, r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// newRunRecord builds a pending run record with its optional validated W3C
+// parent carrier. It performs no I/O, so the plain insert and the
+// event-coupled InsertRunWithEvent share one construction path.
+func newRunRecord(repoID, branch, headSHA, baseSHA string, traceCtx *tracecontext.Context) *Run {
 	ts := now()
 	r := &Run{
 		ID:               newID(),
@@ -107,14 +119,21 @@ func (d *DB) InsertRunWithTraceContext(repoID, branch, headSHA, baseSHA string, 
 			r.Tracestate = &tracestate
 		}
 	}
-	_, err := d.sql.Exec(
+	return r
+}
+
+// insertRunExec writes r through exec (the shared *sql.DB or an open *sql.Tx),
+// so the plain InsertRunWithTraceContext and the event-coupled
+// InsertRunWithEvent persist a byte-identical row.
+func insertRunExec(ctx context.Context, exec sqlExecutor, r *Run) error {
+	_, err := exec.ExecContext(ctx,
 		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, traceparent, tracestate, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, r.Traceparent, r.Tracestate, headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, r.Traceparent, r.Tracestate, r.HeadSHA, r.Status, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("insert run: %w", err)
+		return fmt.Errorf("insert run: %w", err)
 	}
-	return r, nil
+	return nil
 }
 
 // GetRun returns a run by ID.
@@ -494,8 +513,15 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 // when a step enters a gate (awaiting_approval / fix_review). This is a pollable
 // observability signal only; it does not change gate resolution.
 func (d *DB) SetRunAwaitingAgent(id string) error {
+	return setRunAwaitingAgentExec(context.Background(), d.sql, id)
+}
+
+// setRunAwaitingAgentExec stamps the awaiting-agent marker through exec, so the
+// plain SetRunAwaitingAgent and the event-coupled SetRunAwaitingAgentWithEvent
+// write an identical row.
+func setRunAwaitingAgentExec(ctx context.Context, exec sqlExecutor, id string) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET awaiting_agent_since = ?, updated_at = ? WHERE id = ?`, ts, ts, id)
+	_, err := exec.ExecContext(ctx, `UPDATE runs SET awaiting_agent_since = ?, updated_at = ? WHERE id = ?`, ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("set run awaiting agent: %w", err)
 	}
