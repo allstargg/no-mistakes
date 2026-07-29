@@ -6,9 +6,17 @@ import "go.opentelemetry.io/otel/attribute"
 // this package metadata-only: adding attributes requires a registry change and
 // a privacy review, not a caller-provided map.
 const (
-	spanNameRun  = "tracewake.no_mistakes.run"
-	spanNameStep = "tracewake.no_mistakes.step"
-	spanNameGate = "tracewake.firstmate.human_gate.wait"
+	spanNameRun        = "tracewake.no_mistakes.run"
+	spanNameStep       = "tracewake.no_mistakes.step"
+	spanNameGate       = "tracewake.firstmate.human_gate.wait"
+	spanNameInvocation = "tracewake.agent.invoke"
+
+	metricGenAIClientTokenUsage  = "gen_ai.client.token.usage"
+	metricGenAIClientOperation   = "gen_ai.client.operation.duration"
+	metricInvocationDuration     = "tracewake.no_mistakes.invocation.duration"
+	metricSessionFallbacks       = "tracewake.no_mistakes.session.fallbacks"
+	metricSubprocessWaitDuration = "tracewake.no_mistakes.subprocess_wait.duration"
+	metricTelemetryCoverage      = "tracewake.telemetry.coverage"
 
 	eventDecisionRequested = "tracewake.decision.requested"
 	eventDecisionResolved  = "tracewake.decision.resolved"
@@ -21,9 +29,11 @@ const (
 	phaseComplete = "complete"
 	phaseOther    = "other"
 
-	failureToolError = "tool_error"
-	failureCIFailed  = "ci_failed"
-	failureCrashed   = "crashed"
+	failureToolError   = "tool_error"
+	failureCIFailed    = "ci_failed"
+	failureCrashed     = "crashed"
+	failureSpawnFailed = "spawn_failed"
+	failureCancelled   = "cancelled"
 
 	ciSuccess = "success"
 )
@@ -37,4 +47,14 @@ var (
 	attrWaitKind        = attribute.Key("tracewake.wait.kind")
 	attrGateKind        = attribute.Key("tracewake.no_mistakes.gate.kind")
 	attrCIState         = attribute.Key("tracewake.no_mistakes.ci.state")
+
+	attrInvocationID  = attribute.Key("tracewake.no_mistakes.invocation.id")
+	attrOperationName = attribute.Key("gen_ai.operation.name")
+	attrProviderName  = attribute.Key("gen_ai.provider.name")
+	attrTokenType     = attribute.Key("gen_ai.token.type")
+	attrHarnessFamily = attribute.Key("tracewake.harness.family")
+	attrModelFamily   = attribute.Key("tracewake.model.family")
+	attrSessionMode   = attribute.Key("tracewake.no_mistakes.session.mode")
+	attrCapability    = attribute.Key("tracewake.capability")
+	attrCoverage      = attribute.Key("tracewake.coverage")
 )

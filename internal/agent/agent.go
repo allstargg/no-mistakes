@@ -192,6 +192,14 @@ type Result struct {
 	// Usage tracks token consumption for the invocation.
 	Usage         TokenUsage
 	UsageReported bool
+	// The component flags preserve partial provider coverage. A true value
+	// proves that exact counter was reported, including a genuine zero. When
+	// UsageReported is true and all component flags are false, the result is a
+	// legacy all-components report and callers retain the pre-flag behavior.
+	InputTokensReported     bool
+	OutputTokensReported    bool
+	CacheReadTokensReported bool
+	ReasoningTokensReported bool
 	// SessionID is the adapter-native session identity of this invocation
 	// when the adapter reports one. Callers persist it to resume later.
 	SessionID string

@@ -163,6 +163,37 @@ func (d *DB) GetRunContext(ctx context.Context, id string) (*Run, error) {
 	return r, nil
 }
 
+const MaxTerminalRunProjectionBatch = 128
+
+// RecentTerminalRunIDs returns a bounded newest-first set for startup
+// reprojection. Identity-only reads let the optional observer recover a missed
+// terminal wake-up without turning startup into an unbounded history scan.
+func (d *DB) RecentTerminalRunIDs(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 || limit > MaxTerminalRunProjectionBatch {
+		return nil, fmt.Errorf("recent terminal run ids: invalid limit")
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT id FROM runs
+		WHERE status IN (?, ?, ?)
+		  AND EXISTS (SELECT 1 FROM agent_invocations WHERE agent_invocations.run_id = runs.id)
+		ORDER BY updated_at DESC, id DESC LIMIT ?`,
+		types.RunCompleted, types.RunFailed, types.RunCancelled, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("recent terminal run ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("recent terminal run ids: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetRunsByRepo returns all runs for a repo, newest first.
 func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 	rows, err := d.sql.Query(`SELECT `+runColumns+` FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID)

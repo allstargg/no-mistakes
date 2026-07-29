@@ -166,13 +166,15 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 
 	// Prefer structured output from response
 	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Structured != nil {
-		return &Result{
+		result := &Result{
 			Output:                mr.resp.Info.Structured,
 			Text:                  state.lastText,
 			Usage:                 state.usage,
 			UsageReported:         state.usage.Reported,
 			CacheCreationReported: state.usage.CacheCreationReported,
-		}, nil
+		}
+		markOpencodeUsageCoverage(result)
+		return result, nil
 	}
 
 	// Surface opencode's StructuredOutputError directly. When the model
@@ -195,7 +197,18 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	if outputText == "" {
 		outputText = state.lastText
 	}
-	return finalizeTextResult("opencode", outputText, opts.JSONSchema, state.usage)
+	result, err := finalizeTextResult("opencode", outputText, opts.JSONSchema, state.usage)
+	markOpencodeUsageCoverage(result)
+	return result, err
+}
+
+func markOpencodeUsageCoverage(result *Result) {
+	if result == nil {
+		return
+	}
+	result.InputTokensReported = result.UsageReported
+	result.OutputTokensReported = result.UsageReported
+	result.CacheReadTokensReported = result.CacheCreationReported
 }
 
 func (a *opencodeAgent) Close() error {

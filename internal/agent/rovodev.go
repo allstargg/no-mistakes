@@ -80,7 +80,13 @@ func (a *rovodevAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 		return nil, err
 	}
 
-	return finalizeTextResult("rovodev", text, opts.JSONSchema, usage)
+	result, err := finalizeTextResult("rovodev", text, opts.JSONSchema, usage)
+	if result != nil {
+		result.InputTokensReported = result.UsageReported
+		result.OutputTokensReported = result.UsageReported
+		result.CacheReadTokensReported = result.UsageReported
+	}
+	return result, err
 }
 
 func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string) (string, error) {

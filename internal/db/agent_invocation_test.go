@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,6 +151,70 @@ func TestAgentInvocations_PrivacySafeShape(t *testing.T) {
 				t.Fatalf("agent_invocations column %q could hold %s content", col, forbidden)
 			}
 		}
+	}
+}
+
+func TestClaimOTLPMetricInvocationsIsDurableAndIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projection.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.InsertRepo("/tmp/projection", "https://example.invalid/projection.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for i := 0; i < 3; i++ {
+		inv, err := d.InsertAgentInvocation(AgentInvocation{
+			RunID: run.ID, StepName: "review", Round: i + 1, Purpose: "review", Agent: "codex",
+			SessionMode: InvocationModeCold, StartedAt: int64(i + 1), CompletedAt: int64(i + 2), DurationMS: 1, ExitStatus: "ok",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, inv.ID)
+	}
+	claimed, err := d.ClaimOTLPMetricInvocations(context.Background(), ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != len(ids) {
+		t.Fatalf("first claim = %v, want all %v", claimed, ids)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	claimed, err = d.ClaimOTLPMetricInvocations(context.Background(), []string{ids[2], ids[1], ids[0], ids[2]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("restart/retry claim = %v, want none", claimed)
+	}
+}
+
+func TestClaimOTLPMetricInvocationsRejectsUnboundedOrMalformedInput(t *testing.T) {
+	d, _, _ := openSessionTestDB(t)
+	if _, err := d.ClaimOTLPMetricInvocations(context.Background(), []string{"bad id"}); err == nil {
+		t.Fatal("malformed invocation identity was accepted")
+	}
+	ids := make([]string, MaxOTLPMetricProjectionBatch+1)
+	for i := range ids {
+		ids[i] = "id"
+	}
+	if _, err := d.ClaimOTLPMetricInvocations(context.Background(), ids); err == nil {
+		t.Fatal("unbounded claim batch was accepted")
 	}
 }
 

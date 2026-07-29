@@ -18,9 +18,15 @@ import (
 // exporter accepts no prompt, response, log, diff, file, command, URL, or raw
 // error argument.
 type Snapshot struct {
-	Run    *db.Run
-	Steps  []*db.StepResult
-	Events []*db.MetadataEvent
+	Run         *db.Run
+	Steps       []*db.StepResult
+	Events      []*db.MetadataEvent
+	Invocations []db.AgentInvocation
+	// MetricInvocations is the durably claimed subset whose measurements may
+	// be submitted to the process-local metric SDK. Keeping it separate lets
+	// restart reprojection rebuild every stable-identity span without adding an
+	// invocation's metrics twice.
+	MetricInvocations []db.AgentInvocation
 }
 
 // EmitSnapshot reconstructs ended logical lifecycle spans from source facts.
@@ -29,10 +35,20 @@ type Snapshot struct {
 // logical operation whose end is the durable recovery transition, rather than
 // pretending that a process-local span survived the crash.
 func (r *Runtime) EmitSnapshot(snapshot Snapshot) {
-	if r == nil || !r.enabled || r.tracer == nil || snapshot.Run == nil || !terminalRun(snapshot.Run.Status) {
+	if r == nil || !r.enabled || snapshot.Run == nil || !terminalRun(snapshot.Run.Status) {
 		return
 	}
-	r.emitSnapshot(snapshot)
+	// Coverage is a current observable gauge, not an additive measurement.
+	// Rebuild it idempotently from all durable invocations on startup replay,
+	// independently from the submitted-to-SDK claim for additive metrics.
+	r.recordInvocationCoverage(snapshot.Invocations)
+	if r.tracer != nil {
+		r.emitSnapshot(snapshot)
+		return
+	}
+	// A metrics-only standard configuration still projects the durably claimed
+	// invocation measurements without manufacturing trace spans.
+	r.emitInvocationMetrics(snapshot.MetricInvocations)
 }
 
 func (r *Runtime) emitSnapshot(snapshot Snapshot) {
@@ -83,6 +99,8 @@ func (r *Runtime) emitSnapshot(snapshot Snapshot) {
 		addCIEvents(runSpan, snapshot.Events)
 	}
 	emitCIFailureSpans(r, runCtx, ciContext, run.ID, snapshot.Events)
+	emitInvocationSpans(r, runCtx, stepContexts, snapshot.Invocations)
+	r.emitInvocationMetrics(snapshot.MetricInvocations)
 
 	emitGateSpans(r, runCtx, stepContexts, snapshot.Events)
 	runSpan.End(trace.WithTimestamp(end))

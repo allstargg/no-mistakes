@@ -17,11 +17,12 @@ import (
 // tool calls are categorized by their command, and each tool's
 // started->completed interval (reader-clocked) accrues to subprocess wait time.
 type codexMetricsAccumulator struct {
-	modelRoundtrips  int
-	toolCalls        int
-	categories       ToolCategoryCounts
-	subprocessWaitMS int64
-	starts           map[string]time.Time
+	modelRoundtrips   int
+	toolCalls         int
+	categories        ToolCategoryCounts
+	subprocessWaitMS  int64
+	reasoningReported bool
+	starts            map[string]time.Time
 }
 
 func newCodexMetricsAccumulator() *codexMetricsAccumulator {

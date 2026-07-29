@@ -292,6 +292,59 @@ func TestEnvironmentConfigurationIsOptInAndRejectsMalformedValues(t *testing.T) 
 	}
 }
 
+func TestEnvironmentConfigurationFeatureDetectsTraceAndMetricSignals(t *testing.T) {
+	tests := []struct {
+		name        string
+		env         map[string]string
+		want        configState
+		wantTraces  bool
+		wantMetrics bool
+		tracePath   string
+		metricPath  string
+	}{
+		{name: "generic endpoint enables both", env: map[string]string{envEndpoint: "http://127.0.0.1:4318/base"}, want: configReady, wantTraces: true, wantMetrics: true, tracePath: "/base/v1/traces", metricPath: "/base/v1/metrics"},
+		{name: "trace endpoint enables spans only", env: map[string]string{envTracesEndpoint: "http://127.0.0.1:4318/custom-traces"}, want: configReady, wantTraces: true, tracePath: "/custom-traces"},
+		{name: "metric endpoint enables metrics only", env: map[string]string{envMetricsEndpoint: "http://127.0.0.1:4318/custom-metrics"}, want: configReady, wantMetrics: true, metricPath: "/custom-metrics"},
+		{name: "malformed metric config fails closed", env: map[string]string{envTracesEndpoint: "http://127.0.0.1:4318/v1/traces", envMetricsEndpoint: "://secret"}, want: configMalformed},
+		{name: "metric grpc is rejected", env: map[string]string{envMetricsEndpoint: "http://127.0.0.1:4318", envMetricsProtocol: "grpc"}, want: configMalformed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := parseEnvironment(func(key string) string { return tc.env[key] })
+			if cfg.State != tc.want || cfg.TracesEnabled != tc.wantTraces || cfg.MetricsEnabled != tc.wantMetrics {
+				t.Fatalf("config = %#v, want state=%s traces=%v metrics=%v", cfg, tc.want, tc.wantTraces, tc.wantMetrics)
+			}
+			if tc.tracePath != "" && !strings.HasSuffix(cfg.TracesEndpoint, tc.tracePath) {
+				t.Fatalf("trace endpoint = %q, want suffix %q", cfg.TracesEndpoint, tc.tracePath)
+			}
+			if tc.metricPath != "" && !strings.HasSuffix(cfg.MetricsEndpoint, tc.metricPath) {
+				t.Fatalf("metric endpoint = %q, want suffix %q", cfg.MetricsEndpoint, tc.metricPath)
+			}
+		})
+	}
+}
+
+func TestHealthDoesNotRecoverWhileEitherSignalRemainsDegraded(t *testing.T) {
+	runtime := &Runtime{}
+	runtime.state.Store(healthIndexReady)
+	runtime.traceDegraded.Store(true)
+	runtime.updateExportHealth()
+	if runtime.Health().State != healthDegraded {
+		t.Fatalf("trace failure state = %q, want degraded", runtime.Health().State)
+	}
+	runtime.metricDegraded.Store(true)
+	runtime.traceDegraded.Store(false)
+	runtime.updateExportHealth()
+	if runtime.Health().State != healthDegraded {
+		t.Fatalf("metric failure was masked by trace recovery: %q", runtime.Health().State)
+	}
+	runtime.metricDegraded.Store(false)
+	runtime.updateExportHealth()
+	if runtime.Health().State != healthReady {
+		t.Fatalf("both-signal recovery state = %q, want ready", runtime.Health().State)
+	}
+}
+
 func TestBatchingIsNonBlockingUnderBackpressureAndShutdownIsBounded(t *testing.T) {
 	exporter := newBlockingExporter()
 	runtime := newRuntimeWithExporter(exporter, processorConfig{
@@ -479,8 +532,10 @@ func TestProductionHTTPExporterProjectsTerminalRunWithoutExplicitFlush(t *testin
 	t.Setenv(envSDKDisabled, "false")
 	t.Setenv(envEndpoint, server.URL)
 	t.Setenv(envTracesEndpoint, "")
+	t.Setenv(envMetricsEndpoint, "")
 	t.Setenv(envProtocol, protocolHTTPProtobuf)
 	t.Setenv(envTracesProtocol, "")
+	t.Setenv(envMetricsProtocol, "")
 	for _, key := range []string{
 		"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 		"OTEL_EXPORTER_OTLP_COMPRESSION", "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",

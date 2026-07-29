@@ -99,11 +99,15 @@ func capabilitiesResult(runtime *oteltrace.Runtime) *ipc.CapabilitiesResult {
 	return &ipc.CapabilitiesResult{
 		Capabilities: []ipc.Capability{
 			{Name: ipc.CapabilitySubscribeEvents, Versions: []int{ipc.SubscribeEventsVersion}},
-			{Name: ipc.CapabilityNativeOTLPTraces, Versions: []int{ipc.NativeOTLPTracesVersion}},
+			{Name: ipc.CapabilityNativeOTLPTraces, Versions: []int{ipc.NativeOTLPTracesVersionV1, ipc.NativeOTLPTracesVersion}},
 		},
 		NativeOTLPTraces: &ipc.NativeOTLPTraceHealth{
 			Enabled: health.Enabled, State: state, Protocol: health.Protocol,
-			QueueCapacity: health.QueueCapacity, ContentCapture: false,
+			QueueCapacity: health.QueueCapacity, MetricCardinalityLimit: health.MetricCardinalityLimit,
+			InvocationSpans: health.InvocationSpans, GenAIMetrics: health.GenAIMetrics,
+			ExactUsage: health.ExactUsage, SessionFallbackMetrics: health.SessionFallbackMetrics,
+			ActivityMetrics: health.ActivityMetrics, CoverageMetrics: health.CoverageMetrics,
+			DurableMetricDedupe: health.DurableMetricDedupe, ContentCapture: false,
 		},
 	}
 }

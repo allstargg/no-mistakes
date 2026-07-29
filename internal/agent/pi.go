@@ -113,6 +113,11 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 
 	text := pp.finalText()
 	res, err := finalizeTextResult("pi", text, opts.JSONSchema, pp.usage)
+	if res != nil {
+		res.InputTokensReported = pp.inputReported
+		res.OutputTokensReported = pp.outputReported
+		res.CacheReadTokensReported = pp.cacheReadReported
+	}
 	emitAgentExited(opts, "pi", pid, err)
 	return res, err
 }
@@ -198,12 +203,15 @@ func buildPiPrompt(prompt string, schema json.RawMessage) string {
 type piParser struct {
 	onChunk func(string)
 
-	streamText     map[int]string
-	completeText   map[int]string
-	finalAssistant map[string]any
-	usage          TokenUsage
-	seenUsage      map[string]struct{}
-	assistantError string
+	streamText        map[int]string
+	completeText      map[int]string
+	finalAssistant    map[string]any
+	usage             TokenUsage
+	seenUsage         map[string]struct{}
+	assistantError    string
+	inputReported     bool
+	outputReported    bool
+	cacheReadReported bool
 }
 
 func (p *piParser) parse(ctx context.Context, r io.Reader) error {
@@ -288,6 +296,7 @@ func (p *piParser) rememberAgentEnd(raw any) {
 		if !ok {
 			continue
 		}
+		p.markUsageCoverage(usageMap)
 		usage := piUsageFrom(usageMap)
 		if piUsageIsZero(usage) {
 			continue
@@ -328,6 +337,7 @@ func (p *piParser) recordAssistantUsage(raw any) {
 	if !ok {
 		return
 	}
+	p.markUsageCoverage(usageMap)
 	usage := piUsageFrom(usageMap)
 	if piUsageIsZero(usage) {
 		return
@@ -466,6 +476,18 @@ func piIntField(m map[string]any, names ...string) int {
 		}
 	}
 	return 0
+}
+
+func (p *piParser) markUsageCoverage(usage map[string]any) {
+	if _, ok := usage["input"]; ok {
+		p.inputReported = true
+	}
+	if _, ok := usage["output"]; ok {
+		p.outputReported = true
+	}
+	if _, ok := usage["cacheRead"]; ok {
+		p.cacheReadReported = true
+	}
 }
 
 func piUsageFrom(usage map[string]any) TokenUsage {

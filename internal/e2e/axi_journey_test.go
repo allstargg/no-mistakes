@@ -37,18 +37,24 @@ func axiScenario(t *testing.T) string {
           line: 1
           description: "potential nil deref"
           action: ask-user
+          review_scope: source
       summary: "found 1 issue"
+      tested: []
+      testing_summary: "not run during review"
       risk_level: medium
       risk_rationale: "warning requires human review"
+      risk_scope: source-or-external
   - text: "no issues found"
     structured:
       findings: []
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `

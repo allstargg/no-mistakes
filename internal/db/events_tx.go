@@ -268,11 +268,23 @@ func invocationUsageMetadata(inv AgentInvocation) *InvocationUsageMetadata {
 	if !reported {
 		return nil
 	}
-	input, output, cacheRead := inv.InputTokens, inv.OutputTokens, inv.CacheReadTokens
+	var input, output, cacheRead *int
+	if inv.DeltaInputTokens != nil {
+		value := inv.InputTokens
+		input = &value
+	}
+	if inv.DeltaOutputTokens != nil {
+		value := inv.OutputTokens
+		output = &value
+	}
+	if inv.DeltaCacheReadTokens != nil {
+		value := inv.CacheReadTokens
+		cacheRead = &value
+	}
 	return &InvocationUsageMetadata{
-		InputTokens:          &input,
-		OutputTokens:         &output,
-		CacheReadTokens:      &cacheRead,
+		InputTokens:          input,
+		OutputTokens:         output,
+		CacheReadTokens:      cacheRead,
 		CacheCreationTokens:  inv.CacheCreationTokens,
 		FreshInputTokens:     inv.FreshInputTokens,
 		ReasoningTokens:      inv.ReasoningTokens,

@@ -181,6 +181,38 @@ func TestExtractCodexOutputSchemaPath(t *testing.T) {
 	}
 }
 
+func TestPatchCodexTelemetryModelsCumulativeResumeAndUnknownUsage(t *testing.T) {
+	t.Setenv("FAKEAGENT_CODEX_CUMULATIVE_USAGE", "1")
+	raw := []byte("{\"type\":\"thread.started\",\"thread_id\":\"session\"}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":2}}\n")
+
+	fresh, err := patchCodexTelemetry(raw, []string{"exec", "fresh prompt", "--json"}, "fresh prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(fresh, []byte(`"input_tokens":100`)) || !bytes.Contains(fresh, []byte(`"output_tokens":20`)) {
+		t.Fatalf("fresh usage = %s", fresh)
+	}
+
+	resumed, err := patchCodexTelemetry(raw, []string{"exec", "resume", "session", "resume prompt", "--json"}, "resume prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"input_tokens":250`, `"cached_input_tokens":100`, `"output_tokens":50`, `"reasoning_output_tokens":25`} {
+		if !bytes.Contains(resumed, []byte(want)) {
+			t.Fatalf("resumed usage missing %s: %s", want, resumed)
+		}
+	}
+
+	t.Setenv("FAKEAGENT_CODEX_OMIT_USAGE_MATCH", "unknown usage prompt")
+	unknown, err := patchCodexTelemetry(raw, []string{"exec", "unknown usage prompt", "--json"}, "unknown usage prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(unknown, []byte("turn.completed")) {
+		t.Fatalf("unknown invocation retained usage: %s", unknown)
+	}
+}
+
 func TestExtractCodexPromptSkipsOutputSchemaValue(t *testing.T) {
 	t.Helper()
 

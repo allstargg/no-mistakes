@@ -148,6 +148,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		// surface cache-creation cost, so mark both so the pipeline records
 		// correct per-round deltas and an honest unknown for cache creation.
 		res.SessionUsageCumulative = true
+		res.InputTokensReported = res.UsageReported
+		res.OutputTokensReported = res.UsageReported
+		res.CacheReadTokensReported = res.UsageReported
+		res.ReasoningTokensReported = metrics.reasoningReported
 		m := metrics.metrics()
 		res.Metrics = &m
 		res.Model, res.ModelProvider = resolveCodexModel(threadID, time.Now())
@@ -308,10 +312,10 @@ type codexItem struct {
 }
 
 type codexUsage struct {
-	InputTokens         int `json:"input_tokens"`
-	CachedInputTokens   int `json:"cached_input_tokens"`
-	OutputTokens        int `json:"output_tokens"`
-	ReasoningOutputToks int `json:"reasoning_output_tokens"`
+	InputTokens         int  `json:"input_tokens"`
+	CachedInputTokens   int  `json:"cached_input_tokens"`
+	OutputTokens        int  `json:"output_tokens"`
+	ReasoningOutputToks *int `json:"reasoning_output_tokens"`
 }
 
 // parseCodexEvents reads JSONL from the reader and dispatches events.
@@ -367,11 +371,18 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 
 		case "turn.completed":
 			if event.Usage != nil {
+				reasoning := 0
+				if event.Usage.ReasoningOutputToks != nil {
+					reasoning = *event.Usage.ReasoningOutputToks
+					if metrics != nil {
+						metrics.reasoningReported = true
+					}
+				}
 				usage.Add(TokenUsage{
 					InputTokens:     event.Usage.InputTokens,
 					OutputTokens:    event.Usage.OutputTokens,
 					CacheReadTokens: event.Usage.CachedInputTokens,
-					ReasoningTokens: event.Usage.ReasoningOutputToks,
+					ReasoningTokens: reasoning,
 					Reported:        true,
 				})
 			}

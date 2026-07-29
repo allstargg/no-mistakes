@@ -39,7 +39,8 @@ const (
 	// CapabilityNativeOTLPTraces advertises the optional metadata-only native
 	// SDK exporter independently of the durable sidecar subscription.
 	CapabilityNativeOTLPTraces = "native_otlp_traces"
-	NativeOTLPTracesVersion    = 1
+	NativeOTLPTracesVersionV1  = 1
+	NativeOTLPTracesVersion    = 2
 )
 
 // Server-defined JSON-RPC error codes for global event subscription. They sit
@@ -106,11 +107,19 @@ type Capability struct {
 // NativeOTLPTraceHealth is bounded feature/config/health metadata. It exposes
 // no endpoint, headers, errors, credentials, or other caller-controlled text.
 type NativeOTLPTraceHealth struct {
-	Enabled        bool   `json:"enabled"`
-	State          string `json:"state"`
-	Protocol       string `json:"protocol,omitempty"`
-	QueueCapacity  int    `json:"queue_capacity,omitempty"`
-	ContentCapture bool   `json:"content_capture"`
+	Enabled                bool   `json:"enabled"`
+	State                  string `json:"state"`
+	Protocol               string `json:"protocol,omitempty"`
+	QueueCapacity          int    `json:"queue_capacity,omitempty"`
+	MetricCardinalityLimit int    `json:"metric_cardinality_limit,omitempty"`
+	InvocationSpans        bool   `json:"invocation_spans"`
+	GenAIMetrics           bool   `json:"gen_ai_metrics"`
+	ExactUsage             bool   `json:"exact_usage"`
+	SessionFallbackMetrics bool   `json:"session_fallback_metrics"`
+	ActivityMetrics        bool   `json:"activity_metrics"`
+	CoverageMetrics        bool   `json:"coverage_metrics"`
+	DurableMetricDedupe    bool   `json:"durable_metric_dedupe"`
+	ContentCapture         bool   `json:"content_capture"`
 }
 
 // CapabilitiesResult lists the daemon's optional capabilities.

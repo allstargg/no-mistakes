@@ -44,6 +44,9 @@ func runCodex(args []string, scenario *Scenario) int {
 		return 1
 	} else if data != nil {
 		patched, err := patchCodexFixture(data, action)
+		if err == nil {
+			patched, err = patchCodexTelemetry(patched, args, prompt)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fakeagent: codex patch: %v\n", err)
 			return 1
@@ -67,14 +70,10 @@ func runCodex(args []string, scenario *Scenario) int {
 			"text": body,
 		},
 	})
-	_ = enc.Encode(map[string]any{
-		"type": "turn.completed",
-		"usage": map[string]int{
-			"input_tokens":        100,
-			"cached_input_tokens": 0,
-			"output_tokens":       50,
-		},
-	})
+	if !codexUsageOmitted(prompt) {
+		usage := codexTestUsage(args)
+		_ = enc.Encode(map[string]any{"type": "turn.completed", "usage": usage})
+	}
 	return 0
 }
 
@@ -125,6 +124,68 @@ func patchCodexFixture(raw []byte, action Action) ([]byte, error) {
 		out.WriteByte('\n')
 	}
 	return out.Bytes(), nil
+}
+
+func patchCodexTelemetry(raw []byte, args []string, prompt string) ([]byte, error) {
+	omit := codexUsageOmitted(prompt)
+	cumulative := os.Getenv("FAKEAGENT_CODEX_CUMULATIVE_USAGE") == "1"
+	if !omit && !cumulative {
+		return raw, nil
+	}
+	var out bytes.Buffer
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		if len(line) == 0 {
+			out.WriteByte('\n')
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal(line, &event); err != nil || event["type"] != "turn.completed" {
+			out.Write(line)
+			out.WriteByte('\n')
+			continue
+		}
+		if omit {
+			continue
+		}
+		event["usage"] = codexTestUsage(args)
+		patched, err := json.Marshal(event)
+		if err != nil {
+			return nil, fmt.Errorf("marshal patched usage: %w", err)
+		}
+		out.Write(patched)
+		out.WriteByte('\n')
+	}
+	return out.Bytes(), nil
+}
+
+func codexUsageOmitted(prompt string) bool {
+	match := os.Getenv("FAKEAGENT_CODEX_OMIT_USAGE_MATCH")
+	return match != "" && strings.Contains(prompt, match)
+}
+
+func codexTestUsage(args []string) map[string]int {
+	if os.Getenv("FAKEAGENT_CODEX_CUMULATIVE_USAGE") == "1" {
+		if codexResumeArgs(args) {
+			return map[string]int{
+				"input_tokens": 250, "cached_input_tokens": 100,
+				"output_tokens": 50, "reasoning_output_tokens": 25,
+			}
+		}
+		return map[string]int{
+			"input_tokens": 100, "cached_input_tokens": 40,
+			"output_tokens": 20, "reasoning_output_tokens": 10,
+		}
+	}
+	return map[string]int{"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 50}
+}
+
+func codexResumeArgs(args []string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "exec" {
+			return args[i+1] == "resume"
+		}
+	}
+	return false
 }
 
 // extractCodexOutputSchema returns the --output-schema value from the

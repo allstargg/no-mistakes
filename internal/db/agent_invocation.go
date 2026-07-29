@@ -2,7 +2,10 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 )
 
 // Agent invocation session modes recorded for local performance telemetry.
@@ -172,10 +175,26 @@ func insertAgentInvocationExec(ctx context.Context, exec sqlExecutor, inv AgentI
 
 // GetAgentInvocationsByRun returns a run's invocations in execution order.
 func (d *DB) GetAgentInvocationsByRun(runID string) ([]AgentInvocation, error) {
-	rows, err := d.sql.Query(
-		`SELECT `+agentInvocationColumns+` FROM agent_invocations WHERE run_id = ? ORDER BY started_at, id`,
-		runID,
-	)
+	return d.getAgentInvocationsByRun(context.Background(), runID, 0)
+}
+
+// GetAgentInvocationsByRunContext is the bounded cancellable projection read.
+func (d *DB) GetAgentInvocationsByRunContext(ctx context.Context, runID string, limit int) ([]AgentInvocation, error) {
+	if !validBoundedID(runID) || limit <= 0 || limit > MaxOTLPMetricProjectionBatch {
+		return nil, fmt.Errorf("get agent invocations: invalid projection read")
+	}
+	return d.getAgentInvocationsByRun(ctx, runID, limit)
+}
+
+func (d *DB) getAgentInvocationsByRun(ctx context.Context, runID string, limit int) ([]AgentInvocation, error) {
+	query := `SELECT ` + agentInvocationColumns + ` FROM agent_invocations WHERE run_id = ? ORDER BY started_at, id`
+	args := []any{runID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := d.sql.QueryContext(ctx, query, args...)
+
 	if err != nil {
 		return nil, fmt.Errorf("get agent invocations: %w", err)
 	}
@@ -214,27 +233,85 @@ func scanAgentInvocation(row scanner) (AgentInvocation, error) {
 	return inv, nil
 }
 
-// LatestSessionCumulative returns the most recent prior invocation's cumulative
-// token counters for the same run and non-empty session key. It is how the
-// pipeline computes a resumed session's per-round delta (current cumulative
-// minus this prior). found is false when the session has no prior invocation
-// (cold, started, or a fresh fallback), in which case the current counters are
-// already per-round.
-func (d *DB) LatestSessionCumulative(runID, sessionKey string) (input, output, cacheRead int, found bool) {
+// LatestSessionUsageObservation returns the immediately preceding durable row
+// for a non-empty session fingerprint. Projection delta logic must inspect the
+// whole observation, not only its raw counters: adapter/provider continuity,
+// source ordering, and per-component coverage decide whether subtraction is
+// truthful. Insertion order is authoritative when source timestamps have only
+// second precision; a source timestamp that moves backwards is still detected
+// by the caller and fails closed.
+func (d *DB) LatestSessionUsageObservation(runID, sessionKey string) (*AgentInvocation, error) {
 	if sessionKey == "" {
-		return 0, 0, 0, false
+		return nil, nil
 	}
-	err := d.sql.QueryRow(
-		`SELECT input_tokens, output_tokens, cache_read_tokens
-		 FROM agent_invocations
+	row := d.sql.QueryRow(
+		`SELECT `+agentInvocationColumns+` FROM agent_invocations
 		 WHERE run_id = ? AND session_key = ?
-		 ORDER BY started_at DESC, id DESC LIMIT 1`,
+		 ORDER BY rowid DESC LIMIT 1`,
 		runID, sessionKey,
-	).Scan(&input, &output, &cacheRead)
+	)
+	inv, err := scanAgentInvocation(row)
 	if err != nil {
-		return 0, 0, 0, false
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return input, output, cacheRead, true
+	return &inv, nil
+}
+
+const MaxOTLPMetricProjectionBatch = 1000
+
+// ClaimOTLPMetricInvocations durably claims a bounded set of invocation
+// measurements before they are submitted to the process-local asynchronous
+// metric SDK. A durable identity is returned only on its first claim, so daemon
+// restart and terminal-run reprojection do not double-account additive metrics.
+// The checkpoint means submitted-to-SDK, not collector delivery: a crash after
+// claim can lose optional telemetry, which is preferable to inventing an
+// exactly-once broker on the pipeline path.
+func (d *DB) ClaimOTLPMetricInvocations(ctx context.Context, invocationIDs []string) ([]string, error) {
+	if len(invocationIDs) == 0 {
+		return nil, nil
+	}
+	if len(invocationIDs) > MaxOTLPMetricProjectionBatch {
+		return nil, fmt.Errorf("claim OTLP metric invocations: batch exceeds %d", MaxOTLPMetricProjectionBatch)
+	}
+	for _, id := range invocationIDs {
+		if !validBoundedID(id) {
+			return nil, fmt.Errorf("claim OTLP metric invocations: invalid identity")
+		}
+	}
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("claim OTLP metric invocations: begin: %w", err)
+	}
+	defer tx.Rollback()
+	claimed := make([]string, 0, len(invocationIDs))
+	seen := make(map[string]struct{}, len(invocationIDs))
+	for _, id := range invocationIDs {
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		result, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO otlp_metric_projections (invocation_id, claimed_at) VALUES (?, ?)`,
+			id, time.Now().UTC().UnixMilli(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("claim OTLP metric invocation: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("claim OTLP metric invocation: rows affected: %w", err)
+		}
+		if rows == 1 {
+			claimed = append(claimed, id)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("claim OTLP metric invocations: commit: %w", err)
+	}
+	return claimed, nil
 }
 
 // AgentInvocationAggregate summarizes invocations for one purpose, powering
