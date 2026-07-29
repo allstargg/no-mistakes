@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -127,6 +128,105 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestPushReceivedPersistsTraceContextAndReturnsItOverIPC(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	_, headSHA := setupTestGitRepo(t, p, d, "trace-context-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	want := &tracecontext.Context{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "tracewake=prototype",
+	}
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:         p.RepoDir("trace-context-repo"),
+		Ref:          "refs/heads/main",
+		Old:          "0000000000000000000000000000000000000000",
+		New:          headSHA,
+		TraceContext: want,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+
+	var fetched ipc.GetRunResult
+	if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: result.RunID}, &fetched); err != nil {
+		t.Fatal(err)
+	}
+	if fetched.Run == nil || fetched.Run.TraceContext == nil {
+		t.Fatalf("GetRun trace context = %#v, want persisted parent", fetched.Run)
+	}
+	if *fetched.Run.TraceContext != *want {
+		t.Fatalf("GetRun trace context = %#v, want %#v", fetched.Run.TraceContext, want)
+	}
+}
+
+func TestPushReceivedDoesNotReadDaemonAmbientTraceContext(t *testing.T) {
+	t.Setenv(tracecontext.EnvTraceparent, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	t.Setenv(tracecontext.EnvTracestate, "tracewake=ambient-must-not-win")
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	_, headSHA := setupTestGitRepo(t, p, d, "ambient-trace-context-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("ambient-trace-context-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	if run.Traceparent != nil || run.Tracestate != nil {
+		t.Fatalf("daemon ambient context leaked into run: traceparent=%v tracestate=%v", run.Traceparent, run.Tracestate)
+	}
+}
+
+func TestPushReceivedIgnoresInvalidTraceContextWithoutBlockingPipeline(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	_, headSHA := setupTestGitRepo(t, p, d, "invalid-trace-context-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:         p.RepoDir("invalid-trace-context-repo"),
+		Ref:          "refs/heads/main",
+		Old:          "0000000000000000000000000000000000000000",
+		New:          headSHA,
+		TraceContext: &tracecontext.Context{Traceparent: strings.Repeat("x", tracecontext.MaxTraceparentBytes+1)},
+	}, &result); err != nil {
+		t.Fatalf("invalid context blocked push_received: %v", err)
+	}
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	if run.Traceparent != nil || run.Tracestate != nil {
+		t.Fatalf("invalid context persisted: traceparent=%v tracestate=%v", run.Traceparent, run.Tracestate)
 	}
 }
 

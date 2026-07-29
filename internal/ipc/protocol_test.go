@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -130,6 +131,10 @@ func TestPushReceivedParams(t *testing.T) {
 		Old:       "aaa",
 		New:       "bbb",
 		SkipSteps: []types.StepName{types.StepTest, types.StepLint},
+		TraceContext: &tracecontext.Context{
+			Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			Tracestate:  "tracewake=prototype",
+		},
 	}
 	data, _ := json.Marshal(params)
 	var got PushReceivedParams
@@ -141,6 +146,9 @@ func TestPushReceivedParams(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.SkipSteps, params.SkipSteps) {
 		t.Errorf("skip_steps = %+v, want %+v", got.SkipSteps, params.SkipSteps)
+	}
+	if !reflect.DeepEqual(got.TraceContext, params.TraceContext) {
+		t.Errorf("trace_context = %+v, want %+v", got.TraceContext, params.TraceContext)
 	}
 }
 
@@ -181,7 +189,12 @@ func TestGetActiveRunParams(t *testing.T) {
 }
 
 func TestRerunParams(t *testing.T) {
-	params := RerunParams{RepoID: "repo456", Branch: "feature", SkipSteps: []types.StepName{types.StepReview}}
+	params := RerunParams{
+		RepoID:       "repo456",
+		Branch:       "feature",
+		SkipSteps:    []types.StepName{types.StepReview},
+		TraceContext: &tracecontext.Context{Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+	}
 	data, _ := json.Marshal(params)
 	var got RerunParams
 	if err := json.Unmarshal(data, &got); err != nil {
@@ -195,6 +208,9 @@ func TestRerunParams(t *testing.T) {
 	}
 	if len(got.SkipSteps) != 1 || got.SkipSteps[0] != types.StepReview {
 		t.Errorf("skip_steps = %#v, want review", got.SkipSteps)
+	}
+	if !reflect.DeepEqual(got.TraceContext, params.TraceContext) {
+		t.Errorf("trace_context = %+v, want %+v", got.TraceContext, params.TraceContext)
 	}
 }
 
@@ -248,8 +264,12 @@ func TestRunInfoRoundTrip(t *testing.T) {
 		BaseSHA:          "def456",
 		Status:           types.RunRunning,
 		PRURL:            &prURL,
-		CreatedAt:        1700000000,
-		UpdatedAt:        1700000001,
+		TraceContext: &tracecontext.Context{
+			Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			Tracestate:  "tracewake=prototype",
+		},
+		CreatedAt: 1700000000,
+		UpdatedAt: 1700000001,
 	}
 	data, _ := json.Marshal(info)
 	var got RunInfo
@@ -264,6 +284,9 @@ func TestRunInfoRoundTrip(t *testing.T) {
 	}
 	if got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != submittedHead {
 		t.Errorf("submitted_head_sha = %v, want %q", got.SubmittedHeadSHA, submittedHead)
+	}
+	if !reflect.DeepEqual(got.TraceContext, info.TraceContext) {
+		t.Errorf("trace_context = %+v, want %+v", got.TraceContext, info.TraceContext)
 	}
 }
 

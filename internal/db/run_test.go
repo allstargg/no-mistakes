@@ -1,8 +1,10 @@
 package db
 
 import (
+	"path/filepath"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -30,6 +32,61 @@ func TestRunInsertAndGet(t *testing.T) {
 	}
 	if got.HeadSHA != "abc123" {
 		t.Errorf("head sha = %q, want %q", got.HeadSHA, "abc123")
+	}
+}
+
+func TestRunTraceContextPersistsAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.InsertRepo("/home/user/traced-project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &tracecontext.Context{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "tracewake=prototype",
+	}
+	run, err := d.InsertRunWithTraceContext(repo.ID, "feature", "abc123", "def456", want)
+	if err != nil {
+		t.Fatalf("insert traced run: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Traceparent == nil || *got.Traceparent != want.Traceparent {
+		t.Fatalf("Traceparent = %v, want %q", got.Traceparent, want.Traceparent)
+	}
+	if got.Tracestate == nil || *got.Tracestate != want.Tracestate {
+		t.Fatalf("Tracestate = %v, want %q", got.Tracestate, want.Tracestate)
+	}
+}
+
+func TestRunWithoutTraceContextRemainsIndependent(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/standalone-project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Traceparent != nil || got.Tracestate != nil {
+		t.Fatalf("standalone run unexpectedly has a parent: traceparent=%v tracestate=%v", got.Traceparent, got.Tracestate)
 	}
 }
 

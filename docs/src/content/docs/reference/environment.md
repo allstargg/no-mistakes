@@ -34,6 +34,28 @@ Override how long a CLI client waits for an existing daemon socket to accept a c
 
 Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead.
 
+## `TRACEPARENT` and `TRACESTATE`
+
+Carry an approved W3C parent context into a newly started no-mistakes run.
+
+|         |                                               |
+| ------- | --------------------------------------------- |
+| Type    | W3C Trace Context strings                     |
+| Default | unset (the run has no incoming trace parent)  |
+
+The short-lived CLI captures `TRACEPARENT` and optional `TRACESTATE` when a direct `rerun`, AXI start, setup-wizard start, or TUI rerun creates a run. It validates version `00` traceparent IDs and W3C size and grammar limits before sending the context through typed IPC or the managed Git push-option bridge. The long-lived daemon never reads these values from its own ambient environment. Valid context is stored locally with the run for downstream span-parent construction; absent or invalid context leaves the run independent.
+
+A direct Git caller can use the same narrow carrier explicitly:
+
+```sh
+git push \
+  -o no-mistakes.traceparent="$TRACEPARENT" \
+  -o no-mistakes.tracestate="$TRACESTATE" \
+  no-mistakes <branch>
+```
+
+`BAGGAGE` and `no-mistakes.baggage` are not accepted. No arbitrary metadata, authorization values, or sensitive baggage is carried with a run. Invalid, duplicate, oversized, unsupported, and baggage values are ignored without blocking the pipeline, with a bounded diagnostic that never includes the rejected value.
+
 ## `NO_MISTAKES_BITBUCKET_EMAIL`
 
 Bitbucket Cloud account email used for PR creation and CI monitoring.

@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS runs (
     branch               TEXT NOT NULL,
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
+    traceparent             TEXT,
+    tracestate              TEXT,
     submitted_head_sha      TEXT,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
@@ -145,6 +147,10 @@ var migrationStatements = []string{
 	// A parked round may retain the reviewed commit as a non-authoritative
 	// candidate. Only atomic review completion promotes it onto the run.
 	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
+	// Incoming W3C parent context is nullable and never backfilled. A legacy
+	// run without a parent remains an independent trace root.
+	`ALTER TABLE runs ADD COLUMN traceparent TEXT`,
+	`ALTER TABLE runs ADD COLUMN tracestate TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,

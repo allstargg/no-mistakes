@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -37,6 +38,36 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	}
 	if info.SubmittedHeadSHA == nil || *info.SubmittedHeadSHA != "submitted-head" {
 		t.Fatalf("submitted head = %v, want submitted-head", info.SubmittedHeadSHA)
+	}
+}
+
+func TestRunToInfoIncludesPersistedTraceContext(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepo("/home/user/traced-project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &tracecontext.Context{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "tracewake=prototype",
+	}
+	run, err := d.InsertRunWithTraceContext(repo.ID, "feature", "head", "base", want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info := runToInfo(d, run, nil)
+	if info.TraceContext == nil || info.TraceContext.Traceparent != want.Traceparent || info.TraceContext.Tracestate != want.Tracestate {
+		t.Fatalf("RunInfo trace context = %#v, want %#v", info.TraceContext, want)
 	}
 }
 
