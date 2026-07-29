@@ -84,7 +84,7 @@ When a push arrives via the post-receive hook:
 1. Creates a detached worktree at `~/.no-mistakes/worktrees/<repoID>/<runID>/`
 2. Starts the pipeline executor in that worktree
 3. Streams live events to any connected TUI clients, serves request/response state to AXI clients, and offers a durable, replayable global [metadata-event subscription](/no-mistakes/reference/metadata-events/) that a local consumer feature-detects and resumes from a cursor
-4. When a standard OTLP endpoint is configured, asynchronously projects terminal lifecycle facts through an optional metadata-only [native OpenTelemetry exporter](/no-mistakes/reference/environment/#native-otlp-trace-export)
+4. When a standard OTLP endpoint is configured, asynchronously projects terminal lifecycle facts through an optional metadata-only [native OpenTelemetry exporter](/no-mistakes/reference/environment/#native-otlp-trace-and-metric-export)
 5. Cleans up the worktree when the run finishes (success or failure)
 
 Pipeline agents are prompted to keep intentional writes inside that detached worktree and avoid changing system state outside it, such as Homebrew packages, apps under `/Applications`, or global tool configuration.

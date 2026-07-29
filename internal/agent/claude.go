@@ -131,6 +131,9 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		// so SessionUsageCumulative stays false and per-round deltas equal the
 		// raw counters.
 		res.CacheCreationReported = res.UsageReported
+		res.InputTokensReported = res.UsageReported
+		res.OutputTokensReported = res.UsageReported
+		res.CacheReadTokensReported = res.UsageReported
 		if result.model != "" {
 			res.ModelProvider = "anthropic"
 		}

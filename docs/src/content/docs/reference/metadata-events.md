@@ -83,13 +83,15 @@ When native OTLP is enabled, the daemon asynchronously projects a terminal run f
 - child `tracewake.no_mistakes.step` spans from durable step start/completion timestamps and bounded step outcomes
 - `tracewake.firstmate.human_gate.wait` child spans paired by durable `gate_id`, with registered decision requested/resolved events
 - the registered `tracewake.ci.green` event and a content-free failed CI observation span where those authoritative CI facts exist
+- one `tracewake.agent.invoke` child span per durable completed invocation, with source timestamps and stable invocation-derived identity
+- approved standard GenAI plus Tracewake custom invocation metrics, with exact reported/unavailable coverage and durable restart deduplication
 - OpenTelemetry error status and a bounded failure category, never the stored raw error
 
 A valid incoming [`TRACEPARENT` and `TRACESTATE`](/no-mistakes/reference/environment/#traceparent-and-tracestate) becomes the remote parent with W3C sampling semantics preserved. Missing or invalid context creates an independent trace and never false parentage.
 
-No SDK span object remains open during pipeline work or across a daemon crash. A stale active run recovered after restart is projected as one completed failed logical run ending at the durable recovery transition. Stable span identities derived from durable run, step, gate, and event identities plus bounded process-local suppression reduce duplicate terminal export across retry and recovery, but native OTLP is intentionally not an exactly-once delivery broker. The durable event subscription remains the replay source for consumers that need cursor-based delivery.
+No SDK span object remains open during pipeline work or across a daemon crash. A stale active run recovered after restart is projected as one completed failed logical run ending at the durable recovery transition. Stable span identities derived from durable run, step, gate, event, and invocation identities plus bounded process-local suppression reduce duplicate terminal span export across retry and recovery. Additive metrics use a durable submitted-to-SDK checkpoint to avoid restart reprojection, but native OTLP is intentionally not an exactly-once delivery broker. The durable event subscription remains the replay source for consumers that need cursor-based delivery.
 
-[Environment Variables](/no-mistakes/reference/environment/#native-otlp-trace-export) owns native OTLP configuration, bounds, capability health, and the metadata-only privacy contract. Invocation spans and GenAI/token metrics are not part of this projection.
+[Environment Variables](/no-mistakes/reference/environment/#native-otlp-trace-and-metric-export) owns native OTLP configuration, metric names and dimensions, source semantics, bounds, capability health, deduplication caveats, and the metadata-only privacy contract.
 
 ## Transaction and replay behavior
 

@@ -97,6 +97,9 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	}
 
 	res, err := finalizeCopilotResult(messages, opts.JSONSchema, usage)
+	if res != nil {
+		res.OutputTokensReported = res.UsageReported
+	}
 	emitAgentExited(opts, "copilot", pid, err)
 	return res, err
 }

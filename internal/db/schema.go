@@ -219,6 +219,15 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
     ON agent_invocations (run_id, started_at, id);
 
+-- Optional native OTLP metrics are submitted at most once per durable
+-- invocation across daemon restart/reprojection. This is a bounded local
+-- checkpoint, not a delivery broker: a claimed measurement can still be lost
+-- if the process dies before its asynchronous exporter sends it.
+CREATE TABLE IF NOT EXISTS otlp_metric_projections (
+    invocation_id TEXT PRIMARY KEY REFERENCES agent_invocations(id) ON DELETE CASCADE,
+    claimed_at    INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS run_agent_sessions (
     run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     role       TEXT NOT NULL,

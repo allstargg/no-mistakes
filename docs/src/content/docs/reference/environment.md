@@ -56,23 +56,62 @@ git push \
 
 `BAGGAGE` and `no-mistakes.baggage` are not accepted. No arbitrary metadata, authorization values, or sensitive baggage is carried with a run. Invalid, duplicate, oversized, unsupported, and baggage values are ignored without blocking the pipeline, with a bounded diagnostic that never includes the rejected value.
 
-## Native OTLP trace export
+## Native OTLP trace and metric export
 
-No-mistakes can export terminal run lifecycle traces through the standard OpenTelemetry OTLP HTTP/protobuf exporter. It is opt-in: with neither endpoint variable set, no SDK, exporter, projection worker, or network client is created.
+No-mistakes can export terminal lifecycle traces and aggregate agent-invocation metrics through the standard OpenTelemetry OTLP HTTP/protobuf exporters. Both signals are opt-in. With no endpoint, no SDK, exporter, projection worker, or network client is created.
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Generic HTTP(S) collector base URL; no-mistakes appends `/v1/traces` | unset |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace-specific HTTP(S) URL used exactly as supplied; takes precedence over the generic endpoint | unset |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | Generic OTLP protocol | `http/protobuf` |
-| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Trace-specific protocol; takes precedence over the generic protocol | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Generic HTTP(S) collector base URL; enables both signals and appends `/v1/traces` or `/v1/metrics` | unset |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace-specific HTTP(S) URL used exactly as supplied; enables traces independently and takes precedence for that signal | unset |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Metric-specific HTTP(S) URL used exactly as supplied; enables metrics independently and takes precedence for that signal | unset |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Generic OTLP protocol for enabled signals | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Trace-specific protocol; takes precedence for traces | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | Metric-specific protocol; takes precedence for metrics | `http/protobuf` |
 | `OTEL_SDK_DISABLED` | `true` disables native OTLP even when an endpoint is present | unset |
 
-Only `http/protobuf` and an absolute `http` or `https` URL are accepted. Embedded URL user information, query strings, fragments, and malformed configuration leave export disabled with `misconfigured` health. The upstream HTTP exporter also consumes its standard header, compression, and TLS certificate variables. Export has fixed local safety bounds instead of configurable unbounded queues or retries: a 256-span non-blocking queue, batches of at most 64 spans, 1-second per-request and retry-elapsed budgets, and a 2-second daemon-shutdown budget.
+Only `http/protobuf` and an absolute `http` or `https` URL are accepted. Embedded URL user information, query strings, fragments, and malformed enabled-signal configuration leave native export disabled. The upstream HTTP exporters also consume their standard signal-specific and generic header, compression, TLS certificate, and client-certificate variables. A generic endpoint enables both signals; a signal-specific endpoint can enable only that signal.
 
-The daemon reads this configuration at startup, so restart it after changing the variables, subject to the [active-run lifecycle guard](/no-mistakes/concepts/daemon/#starting-and-stopping). Use the daemon's `capabilities` IPC response to feature-detect `native_otlp_traces` version `1` and inspect its fixed-shape `enabled`, `state`, `protocol`, `queue_capacity`, and always-false `content_capture` fields. Health states are `disabled`, `ready`, `degraded`, `misconfigured`, and `stopped`; no endpoint, header, credential, or raw exporter error is exposed.
+Export has fixed local safety bounds instead of configurable unbounded queues or retries. Traces use a 256-span non-blocking queue and batches of at most 64 spans. Metrics use delta temporality, explicit histogram buckets, at most 2,048 process-local series per metric stream, a rolling coverage window of at most 4,096 completed invocations, and a 250 ms asynchronous collection interval. Both exporters use a 1-second request timeout, bounded retry elapsed time, and a 2-second daemon-shutdown budget. The projection worker uses a bounded queue and bounded startup replay. Queue pressure, collector outage, malformed configuration, exporter failure, and flush timeout do not affect pipeline execution or durable lifecycle writes.
 
-Export is metadata-only and reconstructed asynchronously after a run becomes terminal from the existing durable run, step, gate, CI, and failure facts. The payload can contain the exact local run ID for trace correlation plus approved bounded Tracewake attributes. It never contains prompts, responses, logs, diffs, files, command output, raw errors, arbitrary URLs, check names, tokens, or secrets, and there is no content-capture opt-in. Queue pressure, collector outage, malformed configuration, exporter failure, and flush timeout do not affect pipeline execution or durable lifecycle writes.
+The daemon reads this configuration at startup, so restart it after changing the variables, subject to the [active-run lifecycle guard](/no-mistakes/concepts/daemon/#starting-and-stopping). Use the daemon's `capabilities` IPC response to feature-detect `native_otlp_traces` version `2` (version `1` remains advertised for compatibility). Version 2 health reports whether trace and metric export are independently active through `invocation_spans` and `gen_ai_metrics`, plus explicit `exact_usage`, `session_fallback_metrics`, `activity_metrics`, `coverage_metrics`, and `durable_metric_dedupe` support flags. It also exposes only fixed bounds and the bounded states `disabled`, `ready`, `degraded`, `misconfigured`, and `stopped`. No endpoint, header, credential, or raw exporter error is exposed, and `content_capture` is always false.
+
+### Projection and identity
+
+Export is metadata-only and reconstructed asynchronously after a run becomes terminal from durable run, step, gate, CI, failure, and completed invocation facts. Each durable completed invocation produces a `tracewake.agent.invoke` span beneath its pipeline step. Invocation span IDs are derived from the durable invocation ID, so restart replay reproduces stable identities rather than creating new logical spans. Source start and end timestamps are retained.
+
+Invocation spans use only bounded outcome, step, session mode, harness family, provider family, model family, and failure-category attributes. The exact invocation ID is present for correlation. Session keys, prompts, responses, logs, diffs, file paths or contents, command output, tool names, raw errors, arbitrary URLs, check names, branch names, commit SHAs, credentials, and secrets are never exported. Provider and model dimensions are normalized into small allowlisted families; arbitrary reported model strings are not dimensions.
+
+### Invocation metrics
+
+The exporter records the following allowlisted instruments from existing durable invocation facts:
+
+| Metric | Unit | Meaning |
+| --- | --- | --- |
+| `gen_ai.client.token.usage` | `{token}` | Standard input and output token histogram; `gen_ai.token.type` is `input` or `output` |
+| `gen_ai.client.operation.duration` | `s` | Standard agent operation-duration histogram |
+| `tracewake.no_mistakes.invocation.duration` | `s` | End-to-end durable invocation duration |
+| `tracewake.no_mistakes.session.fallbacks` | `{fallback}` | Resume-to-fresh session fallbacks |
+| `tracewake.no_mistakes.subprocess_wait.duration` | `s` | Bounded subprocess wait summarized by the adapter |
+| `tracewake.telemetry.coverage` | `1` | Current reported, partial, or unavailable coverage counts for bounded capabilities |
+
+Metric dimensions are limited to allowlisted step, operation, outcome, failure category, session mode, harness family, provider family, model family, token type, capability, and coverage values. Run IDs, invocation IDs, session identities, repository paths, branch or commit identities, and arbitrary model or tool names are not metric dimensions. Cache-creation, cache-read, reasoning-token, per-tool, and model-round-trip facts remain durable local diagnostics but are not mapped to unapproved metric names.
+
+Token values are exported only when the adapter reported that exact component. Missing data is unknown, not zero. For resumed sessions whose adapters report cumulative usage, no-mistakes derives a per-invocation delta only when a strictly earlier observation from the same run, session, adapter, and provider has the required component. Missing predecessors or components, provider changes, timestamp reordering, and counter rollback all fail closed to unavailable coverage. First observations and new sessions use their reported per-invocation values directly.
+
+Adapter source semantics are explicit:
+
+| Adapter family | Exact usage source and caveat |
+| --- | --- |
+| Codex | Input, output, cache-read, and optional reasoning counters from `turn.completed`; resumed session values are cumulative and require durable predecessor subtraction |
+| Claude | Per-invocation input, output, cache-read, and cache-creation counters from result usage |
+| OpenCode | Per-invocation input and output counters; cache-read and cache-creation are known only when the cache object is present |
+| Pi | Per-invocation components are known only when their fields are present in assistant or agent-end usage |
+| ACP | Positive optional input, output, and cache-read counters are exact; absent or ambiguous zero-valued fields stay unknown, and estimated output is never exported as reported usage |
+| Copilot | Output is exact only when reported by the event stream; input and cache usage remain unknown |
+| Rovo Dev | Per-invocation input, output, and cache-read counters from the usage response |
+
+A durable per-invocation projection checkpoint prevents additive token and invocation metrics from being submitted to the SDK again during daemon restart replay. This is not an exactly-once transport guarantee: the checkpoint means submitted to the local SDK, and a process can fail between local SDK acceptance and collector delivery. Invocation spans remain safely replayable with stable span identity.
 
 Native OTLP is independent of both the replayable [metadata-event subscription](/no-mistakes/reference/metadata-events/) and anonymous Umami product telemetry. `NO_MISTAKES_TELEMETRY` controls Umami only and does not enable or disable native OTLP.
 

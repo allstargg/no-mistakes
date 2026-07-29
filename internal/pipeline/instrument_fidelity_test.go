@@ -47,7 +47,8 @@ func (a *cumulativeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*ag
 			CacheReadTokens: a.cumCache,
 			ReasoningTokens: 5 * a.round,
 		},
-		UsageReported: true,
+		UsageReported: true, InputTokensReported: true, OutputTokensReported: true,
+		CacheReadTokensReported: true, ReasoningTokensReported: true,
 		Metrics: &agent.InvocationMetrics{
 			ModelRoundtrips:  4,
 			ToolCalls:        3,
@@ -113,9 +114,9 @@ func TestPerfRecording_ResumedSessionRecordsPerRoundDeltas(t *testing.T) {
 	assertPtr(t, "r2 delta input", r2.DeltaInputTokens, 1500)
 	assertPtr(t, "r2 delta output", r2.DeltaOutputTokens, 150)
 	assertPtr(t, "r2 delta cache", r2.DeltaCacheReadTokens, 1200)
-	// Fresh input = input - cache read (cumulative per row).
+	// Fresh input is per-invocation: delta input minus delta cache read.
 	assertPtr(t, "r1 fresh", r1.FreshInputTokens, 400)
-	assertPtr(t, "r2 fresh", r2.FreshInputTokens, 700)
+	assertPtr(t, "r2 fresh", r2.FreshInputTokens, 300)
 	// Reasoning + activity metrics.
 	assertPtr(t, "r2 reasoning", r2.ReasoningTokens, 10)
 	assertPtr(t, "r2 roundtrips", r2.ModelRoundtrips, 4)
@@ -244,6 +245,120 @@ func TestPerfRecording_MissingProviderUsageIsUnknown(t *testing.T) {
 	}
 }
 
+func TestPerfRecording_CumulativeUsageDeltasFailClosedOnAmbiguousPredecessors(t *testing.T) {
+	provider := "openai"
+	cases := []struct {
+		name         string
+		seed         *db.AgentInvocation
+		currentStart int64
+		currentAgent string
+		provider     string
+		input        int
+		want         *int
+	}{
+		{
+			name: "durable predecessor subtracts across restart",
+			seed: &db.AgentInvocation{Agent: "codex", ModelProvider: &provider, StartedAt: 10, CompletedAt: 20,
+				InputTokens: 100, DeltaInputTokens: intPtr(100)},
+			currentStart: 21, currentAgent: "codex", provider: provider, input: 175, want: intPtr(75),
+		},
+		{
+			name:         "missing predecessor is unknown",
+			currentStart: 21, currentAgent: "codex", provider: provider, input: 175,
+		},
+		{
+			name: "counter rollback is unknown",
+			seed: &db.AgentInvocation{Agent: "codex", ModelProvider: &provider, StartedAt: 10, CompletedAt: 20,
+				InputTokens: 200, DeltaInputTokens: intPtr(200)},
+			currentStart: 21, currentAgent: "codex", provider: provider, input: 175,
+		},
+		{
+			name: "provider change is unknown",
+			seed: &db.AgentInvocation{Agent: "codex", ModelProvider: stringPtr("anthropic"), StartedAt: 10, CompletedAt: 20,
+				InputTokens: 100, DeltaInputTokens: intPtr(100)},
+			currentStart: 21, currentAgent: "codex", provider: provider, input: 175,
+		},
+		{
+			name:         "missing usage on immediate predecessor is unknown",
+			seed:         &db.AgentInvocation{Agent: "codex", ModelProvider: &provider, StartedAt: 10, CompletedAt: 20},
+			currentStart: 21, currentAgent: "codex", provider: provider, input: 175,
+		},
+		{
+			name: "out of order source observation is unknown",
+			seed: &db.AgentInvocation{Agent: "codex", ModelProvider: &provider, StartedAt: 30, CompletedAt: 40,
+				InputTokens: 100, DeltaInputTokens: intPtr(100)},
+			currentStart: 21, currentAgent: "codex", provider: provider, input: 175,
+		},
+		{
+			name: "adapter change is unknown",
+			seed: &db.AgentInvocation{Agent: "claude", ModelProvider: &provider, StartedAt: 10, CompletedAt: 20,
+				InputTokens: 100, DeltaInputTokens: intPtr(100)},
+			currentStart: 21, currentAgent: "codex", provider: provider, input: 175,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database, _, run, _ := setupTest(t)
+			const sessionKey = "durable-session-key"
+			if tc.seed != nil {
+				seed := *tc.seed
+				seed.RunID = run.ID
+				seed.StepName = "review"
+				seed.Round = 1
+				seed.Purpose = "review"
+				seed.SessionMode = db.InvocationModeStarted
+				seed.SessionKey = sessionKey
+				seed.DurationMS = 1000
+				seed.ExitStatus = "ok"
+				if _, err := database.InsertAgentInvocation(seed); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wrapped := &perfRecordingAgent{db: database, runID: run.ID}
+			inv := db.AgentInvocation{
+				RunID: run.ID, Agent: tc.currentAgent, ModelProvider: stringPtr(tc.provider), SessionMode: db.InvocationModeResumed,
+				SessionKey: sessionKey, StartedAt: tc.currentStart, CompletedAt: tc.currentStart + 5,
+			}
+			wrapped.recordResult(&inv, sessionKey, &agent.Result{
+				Usage: agent.TokenUsage{InputTokens: tc.input}, UsageReported: true, InputTokensReported: true, SessionUsageCumulative: true,
+			})
+			if tc.want == nil {
+				if inv.DeltaInputTokens != nil {
+					t.Fatalf("delta input = %d, want unknown", *inv.DeltaInputTokens)
+				}
+			} else {
+				assertPtr(t, "delta input", inv.DeltaInputTokens, *tc.want)
+			}
+		})
+	}
+}
+
+func TestPerfRecording_UsageComponentCoverageStaysPartial(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{db: database, runID: run.ID}
+	inv := db.AgentInvocation{RunID: run.ID, Agent: "copilot", SessionMode: db.InvocationModeCold}
+	wrapped.recordResult(&inv, "", &agent.Result{
+		Usage: agent.TokenUsage{OutputTokens: 42}, UsageReported: true, OutputTokensReported: true,
+	})
+	if inv.DeltaInputTokens != nil || inv.DeltaCacheReadTokens != nil {
+		t.Fatalf("partial output-only usage fabricated input/cache deltas: %+v", inv)
+	}
+	assertPtr(t, "output delta", inv.DeltaOutputTokens, 42)
+}
+
+func TestPerfRecording_CumulativeFirstObservationUsesCurrentCounters(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{db: database, runID: run.ID}
+	inv := db.AgentInvocation{RunID: run.ID, Agent: "codex", SessionMode: db.InvocationModeStarted, SessionKey: "new-session"}
+	wrapped.recordResult(&inv, inv.SessionKey, &agent.Result{
+		Usage:         agent.TokenUsage{InputTokens: 100, OutputTokens: 20},
+		UsageReported: true, InputTokensReported: true, OutputTokensReported: true, SessionUsageCumulative: true,
+	})
+	assertPtr(t, "first input", inv.DeltaInputTokens, 100)
+	assertPtr(t, "first output", inv.DeltaOutputTokens, 20)
+}
+
 type noUsageAgent struct{}
 
 func (noUsageAgent) Name() string { return "noop-agent" }
@@ -251,6 +366,9 @@ func (noUsageAgent) Close() error { return nil }
 func (noUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
 	return &agent.Result{}, nil
 }
+
+func intPtr(value int) *int          { return &value }
+func stringPtr(value string) *string { return &value }
 
 func assertPtr(t *testing.T, name string, got *int, want int) {
 	t.Helper()

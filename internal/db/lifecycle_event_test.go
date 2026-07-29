@@ -78,6 +78,22 @@ func TestInvocationLifecycleEventsPreserveTimestampsUsageAndUnknowns(t *testing.
 	if unknownEnd.Invocation == nil || unknownEnd.Invocation.Usage != nil || unknownEnd.Invocation.Activity != nil {
 		t.Fatalf("unreported usage/activity must remain unknown, got %#v", unknownEnd.Invocation)
 	}
+
+	partial := minimalInvocation(run.ID)
+	partial.StartedAt = 300
+	partial.CompletedAt = 301
+	partial.OutputTokens = 42
+	partial.DeltaOutputTokens = intPtr(42)
+	if err := d.InsertAgentInvocationWithEvent(ctx, partial); err != nil {
+		t.Fatal(err)
+	}
+	events = allEvents(t, d)
+	partialEnd := events[len(events)-1]
+	if partialEnd.Invocation == nil || partialEnd.Invocation.Usage == nil ||
+		partialEnd.Invocation.Usage.InputTokens != nil || partialEnd.Invocation.Usage.CacheReadTokens != nil ||
+		partialEnd.Invocation.Usage.OutputTokens == nil || *partialEnd.Invocation.Usage.OutputTokens != 42 {
+		t.Fatalf("partial output usage fabricated unavailable components: %#v", partialEnd.Invocation)
+	}
 }
 
 func TestGateLifecycleEventsCorrelateIdentityDurationAndDedupeAcrossRestart(t *testing.T) {

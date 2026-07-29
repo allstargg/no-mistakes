@@ -133,34 +133,36 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 	inv.OutputTokens = result.Usage.OutputTokens
 	inv.CacheReadTokens = result.Usage.CacheReadTokens
 
-	if result.UsageReported {
-		fresh := agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
-		inv.FreshInputTokens = &fresh
-	}
-
+	inputReported, outputReported, cacheReadReported := usageComponentCoverage(result)
 	if result.CacheCreationReported {
 		cacheCreation := result.Usage.CacheCreationTokens
 		inv.CacheCreationTokens = &cacheCreation
 	}
 
-	// Per-round deltas: for a resumed session whose raw counters are cumulative,
-	// subtract the same session's prior cumulative so the row cannot be mistaken
-	// for per-round usage. Read the prior BEFORE this row is inserted.
+	// Per-invocation deltas are derived only when the durable predecessor proves
+	// continuity. A cumulative resumed observation with no predecessor, a
+	// provider/adapter change, an unknown predecessor component, source-time
+	// rollback, or counter reset remains unknown rather than being attributed to
+	// the current invocation. Fresh/cold and non-cumulative reports are already
+	// per-invocation and use the exact reported counters.
 	if result.UsageReported {
-		priorInput, priorOutput, priorCache, _ := a.db.LatestSessionCumulative(a.runID, sessionKey)
-		deltaInput := agent.PerRoundTokens(result.Usage.InputTokens, priorInput, result.SessionUsageCumulative)
-		deltaOutput := agent.PerRoundTokens(result.Usage.OutputTokens, priorOutput, result.SessionUsageCumulative)
-		deltaCache := agent.PerRoundTokens(result.Usage.CacheReadTokens, priorCache, result.SessionUsageCumulative)
-		inv.DeltaInputTokens = &deltaInput
-		inv.DeltaOutputTokens = &deltaOutput
-		inv.DeltaCacheReadTokens = &deltaCache
+		if !result.SessionUsageCumulative || inv.SessionMode != db.InvocationModeResumed {
+			setKnownUsageDeltas(inv, result, inputReported, outputReported, cacheReadReported)
+		} else if previous, err := a.db.LatestSessionUsageObservation(a.runID, sessionKey); err == nil &&
+			continuousUsagePredecessor(previous, inv) {
+			setCumulativeUsageDeltas(inv, result, previous, inputReported, outputReported, cacheReadReported)
+		}
+	}
+	if inv.DeltaInputTokens != nil && inv.DeltaCacheReadTokens != nil {
+		fresh := agent.FreshInputTokens(*inv.DeltaInputTokens, *inv.DeltaCacheReadTokens)
+		inv.FreshInputTokens = &fresh
 	}
 
 	if result.Metrics != nil {
 		m := result.Metrics
-		// Reasoning tokens are reported only by adapters that also report
-		// activity metrics (codex); a real zero there is meaningful.
-		if result.UsageReported {
+		// Reasoning is nullable independently from ordinary token usage. The
+		// adapter flag distinguishes a genuine zero from an absent field.
+		if result.ReasoningTokensReported {
 			reasoning := result.Usage.ReasoningTokens
 			inv.ReasoningTokens = &reasoning
 		}
@@ -186,6 +188,62 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 
 	if count, ok := countOutputFindings(result.Output); ok {
 		inv.FindingCount = &count
+	}
+}
+
+func usageComponentCoverage(result *agent.Result) (input, output, cacheRead bool) {
+	if result == nil || !result.UsageReported {
+		return false, false, false
+	}
+	input = result.InputTokensReported
+	output = result.OutputTokensReported
+	cacheRead = result.CacheReadTokensReported
+	if !input && !output && !cacheRead {
+		// Compatibility for adapters/tests written before component coverage was
+		// explicit. All current partial adapters set at least one flag.
+		return true, true, true
+	}
+	return input, output, cacheRead
+}
+
+func setKnownUsageDeltas(inv *db.AgentInvocation, result *agent.Result, input, output, cacheRead bool) {
+	if input {
+		value := result.Usage.InputTokens
+		inv.DeltaInputTokens = &value
+	}
+	if output {
+		value := result.Usage.OutputTokens
+		inv.DeltaOutputTokens = &value
+	}
+	if cacheRead {
+		value := result.Usage.CacheReadTokens
+		inv.DeltaCacheReadTokens = &value
+	}
+}
+
+func continuousUsagePredecessor(previous *db.AgentInvocation, current *db.AgentInvocation) bool {
+	if previous == nil || current == nil || previous.Agent != current.Agent ||
+		previous.StartedAt > current.StartedAt || previous.CompletedAt > current.StartedAt {
+		return false
+	}
+	if (previous.ModelProvider == nil) != (current.ModelProvider == nil) {
+		return false
+	}
+	return previous.ModelProvider == nil || strings.EqualFold(strings.TrimSpace(*previous.ModelProvider), strings.TrimSpace(*current.ModelProvider))
+}
+
+func setCumulativeUsageDeltas(inv *db.AgentInvocation, result *agent.Result, previous *db.AgentInvocation, input, output, cacheRead bool) {
+	if input && previous.DeltaInputTokens != nil && result.Usage.InputTokens >= previous.InputTokens {
+		value := result.Usage.InputTokens - previous.InputTokens
+		inv.DeltaInputTokens = &value
+	}
+	if output && previous.DeltaOutputTokens != nil && result.Usage.OutputTokens >= previous.OutputTokens {
+		value := result.Usage.OutputTokens - previous.OutputTokens
+		inv.DeltaOutputTokens = &value
+	}
+	if cacheRead && previous.DeltaCacheReadTokens != nil && result.Usage.CacheReadTokens >= previous.CacheReadTokens {
+		value := result.Usage.CacheReadTokens - previous.CacheReadTokens
+		inv.DeltaCacheReadTokens = &value
 	}
 }
 

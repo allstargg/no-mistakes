@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
 )
 
 const (
@@ -30,6 +32,19 @@ func (r *Runtime) startProjector() {
 	r.stop = make(chan struct{})
 	r.done = make(chan struct{})
 	go r.projectLoop()
+
+	// Recover a bounded recent set after the worker is live. Stable span IDs
+	// make trace reprojection identifiable, while the durable invocation claim
+	// suppresses duplicate additive metrics across daemon restart.
+	ctx, cancel := context.WithTimeout(context.Background(), projectionTimeout)
+	defer cancel()
+	if runIDs, err := r.database.RecentTerminalRunIDs(ctx, db.MaxTerminalRunProjectionBatch); err == nil {
+		// The query is newest-first. Feed oldest-first so the bounded rolling
+		// coverage window retains the newest durable invocations after replay.
+		for i := len(runIDs) - 1; i >= 0; i-- {
+			r.NotifyRun(runIDs[i])
+		}
+	}
 }
 
 func (r *Runtime) projectLoop() {
@@ -67,10 +82,43 @@ func (r *Runtime) projectRun(runID string) bool {
 	if err != nil {
 		return false
 	}
-	events, err := r.database.ReadRecentMetadataEventsForRun(ctx, runID, 1000)
+	events, err := r.database.ReadRecentMetadataEventsForRun(ctx, runID, db.MaxMetadataEventReadBatch)
 	if err != nil {
 		return false
 	}
-	r.EmitSnapshot(Snapshot{Run: run, Steps: steps, Events: events})
+	invocations, err := r.database.GetAgentInvocationsByRunContext(ctx, runID, db.MaxOTLPMetricProjectionBatch)
+	if err != nil {
+		return false
+	}
+	metricInvocations := r.claimMetricInvocations(ctx, invocations)
+	r.EmitSnapshot(Snapshot{
+		Run: run, Steps: steps, Events: events,
+		Invocations: invocations, MetricInvocations: metricInvocations,
+	})
 	return true
+}
+
+func (r *Runtime) claimMetricInvocations(ctx context.Context, invocations []db.AgentInvocation) []db.AgentInvocation {
+	if !r.metricsEnabled || len(invocations) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(invocations))
+	for i := range invocations {
+		ids = append(ids, invocations[i].ID)
+	}
+	claimed, err := r.database.ClaimOTLPMetricInvocations(ctx, ids)
+	if err != nil || len(claimed) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(claimed))
+	for _, id := range claimed {
+		allowed[id] = struct{}{}
+	}
+	out := make([]db.AgentInvocation, 0, len(claimed))
+	for i := range invocations {
+		if _, ok := allowed[invocations[i].ID]; ok {
+			out = append(out, invocations[i])
+		}
+	}
+	return out
 }

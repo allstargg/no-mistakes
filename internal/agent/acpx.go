@@ -71,10 +71,21 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		emitAgentExited(opts, a.Name(), pid, retErr)
 		return nil, retErr
 	}
+	inputReported := usage.InputTokens > 0
+	outputReported := usage.OutputTokens > 0
+	cacheReadReported := usage.CacheReadTokens > 0
 	if usage.OutputTokens == 0 {
 		usage.OutputTokens = estimateAcpxTokens(len(text))
 	}
 	res, err := finalizeTextResult(a.Name(), text, opts.JSONSchema, usage)
+	if res != nil {
+		// ACP targets expose several optional usage shapes. Positive counters
+		// are authoritative; a missing or zero-valued optional field is left
+		// unknown unless the protocol explicitly reports cache creation.
+		res.InputTokensReported = inputReported
+		res.OutputTokensReported = outputReported
+		res.CacheReadTokensReported = cacheReadReported
+	}
 	emitAgentExited(opts, a.Name(), pid, err)
 	return res, err
 }
