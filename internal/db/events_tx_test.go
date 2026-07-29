@@ -411,8 +411,8 @@ func TestInsertAgentInvocationWithEvent_AtomicAndFKFaultRollback(t *testing.T) {
 		t.Fatalf("invocation count = %d, want 1", len(invs))
 	}
 	events := allEvents(t, d)
-	if len(events) != 1 || events[0].Type != EventTypeInvocationRecorded {
-		t.Fatalf("events = %#v, want one invocation.recorded", events)
+	if len(events) != 2 || events[0].Type != EventTypeInvocationStarted || events[1].Type != EventTypeInvocationCompleted {
+		t.Fatalf("events = %#v, want invocation started/completed pair", events)
 	}
 
 	// Fault: a foreign-key violation inside the mutation rolls the whole thing
@@ -420,8 +420,8 @@ func TestInsertAgentInvocationWithEvent_AtomicAndFKFaultRollback(t *testing.T) {
 	if err := d.InsertAgentInvocationWithEvent(ctx, minimalInvocation("nonexistent-run")); err == nil {
 		t.Fatal("expected FK violation for a non-existent run")
 	}
-	if n := len(allEvents(t, d)); n != 1 {
-		t.Fatalf("event count = %d, want 1 (no event from the faulted insert)", n)
+	if n := len(allEvents(t, d)); n != 2 {
+		t.Fatalf("event count = %d, want 2 (no event from the faulted insert)", n)
 	}
 }
 
@@ -471,10 +471,11 @@ func TestCoupledMutationsRemainMutuallyConsistentAfterReopen(t *testing.T) {
 	events := allEvents(t, reopened)
 
 	wantTypes := map[MetadataEventType]bool{
-		EventTypeRunCreated:         true,
-		EventTypeStepStarted:        true,
-		EventTypeGateAwaitingAgent:  true,
-		EventTypeInvocationRecorded: true,
+		EventTypeRunCreated:          true,
+		EventTypeStepStarted:         true,
+		EventTypeGateAwaitingAgent:   true,
+		EventTypeInvocationStarted:   true,
+		EventTypeInvocationCompleted: true,
 	}
 	if len(events) != len(wantTypes) {
 		t.Fatalf("event count = %d, want %d", len(events), len(wantTypes))

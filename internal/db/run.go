@@ -28,7 +28,10 @@ type Run struct {
 	PRURL                 *string
 	PRState               *string
 	PRStateObservedAt     *int64
+	PRActivity            *string
 	CIReadyAt             *int64
+	CIState               *string
+	CIOutcome             *string
 	LastPushedSHA         *string
 	PushTargetKind        *string
 	PushTargetFingerprint *string
@@ -50,6 +53,11 @@ type Run struct {
 	// wait is cancelled). It is observability only and does not affect gate
 	// resolution.
 	AwaitingAgentSince *int64
+	// AwaitingAgentGateID, Step, and Class are the bounded identity persisted
+	// with a gate wait so an exit after daemon restart correlates with its enter.
+	AwaitingAgentGateID *string
+	AwaitingAgentStep   *string
+	AwaitingAgentClass  *string
 	// ParkedMS accumulates the run's total parked-at-gate wall time in
 	// milliseconds across every gate wait (local performance telemetry;
 	// step duration_ms values exclude this time).
@@ -62,17 +70,17 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, traceparent, tracestate, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, traceparent, tracestate, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, pr_activity, ci_ready_at, ci_state, ci_outcome, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, awaiting_agent_gate_id, awaiting_agent_step, awaiting_agent_class, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Traceparent, &r.Tracestate, &r.SubmittedHeadSHA, &r.ReviewApprovedHeadSHA, &r.Status,
-		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt,
+		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.PRActivity, &r.CIReadyAt, &r.CIState, &r.CIOutcome,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
-		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
+		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.AwaitingAgentGateID, &r.AwaitingAgentStep, &r.AwaitingAgentClass, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -424,7 +432,8 @@ func finalizeTerminalPRRun(tx *sql.Tx, id string, ts int64) error {
 			parked_ms = COALESCE(parked_ms, 0) + CASE
 				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
 				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,
-			awaiting_agent_since = NULL, updated_at = ?
+			awaiting_agent_since = NULL, awaiting_agent_gate_id = NULL, awaiting_agent_step = NULL, awaiting_agent_class = NULL,
+			updated_at = ?
 		 WHERE id = ?`,
 		types.RunPending, types.RunRunning, types.RunCompleted, ts, ts, ts, id,
 	); err != nil {
@@ -533,7 +542,7 @@ func setRunAwaitingAgentExec(ctx context.Context, exec sqlExecutor, id string) e
 // the run resumes, so awaiting_agent_since is non-nil exactly while a gate is
 // actually parked.
 func (d *DB) ClearRunAwaitingAgent(id string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET awaiting_agent_since = NULL, updated_at = ? WHERE id = ?`, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET awaiting_agent_since = NULL, awaiting_agent_gate_id = NULL, awaiting_agent_step = NULL, awaiting_agent_class = NULL, updated_at = ? WHERE id = ?`, now(), id)
 	if err != nil {
 		return fmt.Errorf("clear run awaiting agent: %w", err)
 	}
@@ -558,7 +567,7 @@ func (d *DB) CompleteRunAwaitingAgent(id string, ms int64) error {
 		ms = 0
 	}
 	_, err := d.sql.Exec(
-		`UPDATE runs SET awaiting_agent_since = NULL,
+		`UPDATE runs SET awaiting_agent_since = NULL, awaiting_agent_gate_id = NULL, awaiting_agent_step = NULL, awaiting_agent_class = NULL,
 			parked_ms = COALESCE(parked_ms, 0) + CASE WHEN awaiting_agent_since IS NOT NULL THEN ? ELSE 0 END,
 			updated_at = ? WHERE id = ?`,
 		ms, now(), id,
@@ -617,7 +626,8 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 			parked_ms = COALESCE(parked_ms, 0) + CASE
 				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
 				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,
-			awaiting_agent_since = NULL, updated_at = ? WHERE status IN (?, ?)`+placeholders,
+			awaiting_agent_since = NULL, awaiting_agent_gate_id = NULL, awaiting_agent_step = NULL, awaiting_agent_class = NULL,
+			updated_at = ? WHERE status IN (?, ?)`+placeholders,
 		runArgs...,
 	)
 	if err != nil {

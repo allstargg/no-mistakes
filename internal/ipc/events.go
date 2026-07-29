@@ -217,10 +217,76 @@ func (c *CompiledEventFilter) Matches(runID *string, eventType string) bool {
 
 // --- Stream frames ---
 
+// InvocationUsageInfo contains exact adapter-reported token counters. Omitted
+// fields are unknown, never false zero.
+type InvocationUsageInfo struct {
+	InputTokens          *int `json:"input_tokens,omitempty"`
+	OutputTokens         *int `json:"output_tokens,omitempty"`
+	CacheReadTokens      *int `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens  *int `json:"cache_creation_tokens,omitempty"`
+	FreshInputTokens     *int `json:"fresh_input_tokens,omitempty"`
+	ReasoningTokens      *int `json:"reasoning_tokens,omitempty"`
+	DeltaInputTokens     *int `json:"delta_input_tokens,omitempty"`
+	DeltaOutputTokens    *int `json:"delta_output_tokens,omitempty"`
+	DeltaCacheReadTokens *int `json:"delta_cache_read_tokens,omitempty"`
+}
+
+// InvocationActivityInfo is a fixed count-only activity summary. It has no
+// tool labels, commands, prompt, output, or arbitrary text.
+type InvocationActivityInfo struct {
+	ModelRoundtrips   *int `json:"model_roundtrips,omitempty"`
+	ToolCalls         *int `json:"tool_calls,omitempty"`
+	ToolWaitCalls     *int `json:"tool_wait_calls,omitempty"`
+	ToolTestLintCalls *int `json:"tool_test_lint_calls,omitempty"`
+	ToolEditCalls     *int `json:"tool_edit_calls,omitempty"`
+	ToolReadCalls     *int `json:"tool_read_calls,omitempty"`
+	ToolGitCalls      *int `json:"tool_git_calls,omitempty"`
+	ToolOtherCalls    *int `json:"tool_other_calls,omitempty"`
+	WorkloadFiles     *int `json:"workload_files,omitempty"`
+	WorkloadLines     *int `json:"workload_lines,omitempty"`
+	FindingCount      *int `json:"finding_count,omitempty"`
+}
+
+// InvocationEventInfo is the typed metadata for invocation.started or
+// invocation.completed. InvocationID correlates the pair.
+type InvocationEventInfo struct {
+	InvocationID    string                  `json:"invocation_id"`
+	Phase           string                  `json:"phase"`
+	Step            string                  `json:"step"`
+	Purpose         string                  `json:"purpose"`
+	SessionMode     string                  `json:"session_mode"`
+	Outcome         string                  `json:"outcome,omitempty"`
+	FailureCategory string                  `json:"failure_category,omitempty"`
+	DurationMS      *int64                  `json:"duration_ms,omitempty"`
+	Usage           *InvocationUsageInfo    `json:"usage,omitempty"`
+	Activity        *InvocationActivityInfo `json:"activity,omitempty"`
+}
+
+// GateEventInfo is the typed metadata for a correlated gate enter/exit pair.
+type GateEventInfo struct {
+	GateID         string `json:"gate_id"`
+	Phase          string `json:"phase"`
+	Step           string `json:"step"`
+	Class          string `json:"class"`
+	Outcome        string `json:"outcome,omitempty"`
+	WaitDurationMS *int64 `json:"wait_duration_ms,omitempty"`
+}
+
+// CIEventInfo uses only the CI monitor's bounded normalized vocabulary.
+type CIEventInfo struct {
+	State   string `json:"state"`
+	Outcome string `json:"outcome,omitempty"`
+}
+
+// PREventInfo uses only normalized lifecycle and wait states.
+type PREventInfo struct {
+	State string `json:"state"`
+}
+
 // MetadataEventInfo is the wire form of one durable metadata event. It carries
-// only classification and correlation metadata: there is deliberately no
-// payload, content, or free-form field, which is how content exclusion is
-// enforced at the protocol boundary. Timestamps are unix milliseconds.
+// only classification, correlation, and fixed family metadata: there is
+// deliberately no generic payload, content, map, or free-form field. Timestamps
+// are unix milliseconds.
 type MetadataEventInfo struct {
 	Sequence        int64                 `json:"sequence"`
 	EventID         string                `json:"event_id"`
@@ -232,6 +298,10 @@ type MetadataEventInfo struct {
 	RecordedAt      int64                 `json:"recorded_at_ms"`
 	RunID           *string               `json:"run_id,omitempty"`
 	TraceContext    *tracecontext.Context `json:"trace_context,omitempty"`
+	Invocation      *InvocationEventInfo  `json:"invocation,omitempty"`
+	Gate            *GateEventInfo        `json:"gate,omitempty"`
+	CI              *CIEventInfo          `json:"ci,omitempty"`
+	PR              *PREventInfo          `json:"pr,omitempty"`
 }
 
 // EventStreamFrameKind discriminates the two stream frame shapes.

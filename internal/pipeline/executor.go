@@ -40,6 +40,30 @@ type approvalResponse struct {
 	addedFindings []types.Finding
 }
 
+func gateExitOutcome(response approvalResponse, reconciled bool, waitErr error) db.GateOutcome {
+	if waitErr != nil {
+		if errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded) {
+			return db.GateOutcomeCancelled
+		}
+		return db.GateOutcomeFailed
+	}
+	if reconciled {
+		return db.GateOutcomeReconciled
+	}
+	switch response.action {
+	case types.ActionApprove:
+		return db.GateOutcomeApproved
+	case types.ActionFix:
+		return db.GateOutcomeFixRequested
+	case types.ActionSkip:
+		return db.GateOutcomeSkipped
+	case types.ActionAbort:
+		return db.GateOutcomeAborted
+	default:
+		return db.GateOutcomeUnknown
+	}
+}
+
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
 	db     *db.DB
@@ -307,13 +331,13 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		LogFile:  func(string) {},
 	}
 	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
-		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+		if dbErr := e.db.ExitRunGateWithEvent(context.WithoutCancel(ctx), run.ID, time.Since(parkStart).Milliseconds(), db.GateOutcomeReconciled); dbErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
 		}
 		return completeReconciledGate()
 	} else if reconcileErr != nil && ctx.Err() == nil {
 		if errors.Is(reconcileErr, ErrFatalGateReconciliation) {
-			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			if dbErr := e.db.ExitRunGateWithEvent(context.WithoutCancel(ctx), run.ID, time.Since(parkStart).Milliseconds(), db.GateOutcomeFailed); dbErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("complete fatal reconciliation awaiting-agent state: %w", dbErr), ctx)
 			}
 			if dbErr := e.db.FailStep(gate.stepResult.ID, reconcileErr.Error(), duration); dbErr != nil {
@@ -342,7 +366,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	)
 
 	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, false)
-	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+	if dbErr := e.db.ExitRunGateWithEvent(context.WithoutCancel(ctx), run.ID, time.Since(parkStart).Milliseconds(), gateExitOutcome(response, reconciled, err)); dbErr != nil {
 		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
 	}
 	if err != nil {
@@ -858,7 +882,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// tell in one `axi status` read that the run is waiting for the agent
 		// to drive this gate (versus actively running/fixing/ci). Observability
 		// only: it does not change the wait below. Cleared once the wait ends.
-		if dbErr := e.db.SetRunAwaitingAgentWithEvent(ctx, run.ID); dbErr != nil {
+		gateClass := db.GateClassApproval
+		if approvalStatus == types.StepStatusFixReview {
+			gateClass = db.GateClassFixReview
+		}
+		if dbErr := e.db.EnterRunGateWithEvent(ctx, run.ID, stepName, gateClass); dbErr != nil {
 			slog.Warn("failed to set awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
 		}
 
@@ -869,7 +897,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 
 		response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, true)
-		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+		if dbErr := e.db.ExitRunGateWithEvent(context.WithoutCancel(ctx), run.ID, time.Since(parkStart).Milliseconds(), gateExitOutcome(response, reconciled, err)); dbErr != nil {
 			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
 		}
 		if err != nil {

@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS runs (
     pr_url                  TEXT,
     pr_state                TEXT,
     pr_state_observed_at    INTEGER,
+    pr_activity             TEXT,
     ci_ready_at             INTEGER,
+    ci_state                TEXT,
+    ci_outcome              TEXT,
     last_pushed_sha         TEXT,
     push_target_kind        TEXT,
     push_target_fingerprint TEXT,
@@ -33,8 +36,11 @@ CREATE TABLE IF NOT EXISTS runs (
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
     error                   TEXT,
-    awaiting_agent_since INTEGER,
-    parked_ms            INTEGER,
+    awaiting_agent_since    INTEGER,
+    awaiting_agent_gate_id  TEXT,
+    awaiting_agent_step     TEXT,
+    awaiting_agent_class    TEXT,
+    parked_ms               INTEGER,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -59,6 +65,69 @@ CREATE INDEX IF NOT EXISTS idx_event_log_run_sequence
 
 CREATE INDEX IF NOT EXISTS idx_event_log_recorded_sequence
     ON event_log (recorded_at, sequence);
+
+-- Lifecycle metadata is stored in fixed, family-specific tables rather than a
+-- generic JSON payload. This keeps the event API metadata-only by construction
+-- while allowing TW-34 facts to remain typed, bounded, and independently
+-- versioned through event_log.payload_schema.
+CREATE TABLE IF NOT EXISTS event_invocation_metadata (
+    event_id                 TEXT PRIMARY KEY REFERENCES event_log(event_id) ON DELETE CASCADE,
+    invocation_id            TEXT NOT NULL,
+    phase                    TEXT NOT NULL CHECK (phase IN ('started', 'completed')),
+    step_name                TEXT NOT NULL CHECK (step_name IN ('intent', 'rebase', 'review', 'test', 'document', 'lint', 'push', 'pr', 'ci', 'unknown')),
+    purpose                  TEXT NOT NULL CHECK (purpose IN ('intent', 'intent-fix', 'rebase', 'rebase-fix', 'review', 'review-fix', 'test', 'test-evidence', 'test-fix', 'document', 'document-fix', 'housekeeping', 'lint', 'lint-fix', 'push', 'pr', 'ci', 'ci-fix', 'other')),
+    session_mode             TEXT NOT NULL CHECK (session_mode IN ('cold', 'started', 'resumed', 'fallback', 'other')),
+    outcome                  TEXT CHECK (outcome IN ('ok', 'error', 'cancelled', 'unknown')),
+    failure_category         TEXT CHECK (failure_category IN ('parse', 'exit', 'spawn', 'cancelled', 'other')),
+    duration_ms              INTEGER CHECK (duration_ms >= 0),
+    input_tokens             INTEGER CHECK (input_tokens >= 0),
+    output_tokens            INTEGER CHECK (output_tokens >= 0),
+    cache_read_tokens        INTEGER CHECK (cache_read_tokens >= 0),
+    cache_creation_tokens    INTEGER CHECK (cache_creation_tokens >= 0),
+    fresh_input_tokens       INTEGER CHECK (fresh_input_tokens >= 0),
+    reasoning_tokens         INTEGER CHECK (reasoning_tokens >= 0),
+    delta_input_tokens       INTEGER CHECK (delta_input_tokens >= 0),
+    delta_output_tokens      INTEGER CHECK (delta_output_tokens >= 0),
+    delta_cache_read_tokens  INTEGER CHECK (delta_cache_read_tokens >= 0),
+    model_roundtrips         INTEGER CHECK (model_roundtrips >= 0),
+    tool_calls               INTEGER CHECK (tool_calls >= 0),
+    tool_wait_calls          INTEGER CHECK (tool_wait_calls >= 0),
+    tool_test_lint_calls     INTEGER CHECK (tool_test_lint_calls >= 0),
+    tool_edit_calls          INTEGER CHECK (tool_edit_calls >= 0),
+    tool_read_calls          INTEGER CHECK (tool_read_calls >= 0),
+    tool_git_calls           INTEGER CHECK (tool_git_calls >= 0),
+    tool_other_calls         INTEGER CHECK (tool_other_calls >= 0),
+    workload_files           INTEGER CHECK (workload_files >= 0),
+    workload_lines           INTEGER CHECK (workload_lines >= 0),
+    finding_count            INTEGER CHECK (finding_count >= 0),
+    CHECK ((phase = 'started' AND outcome IS NULL AND duration_ms IS NULL) OR phase = 'completed')
+);
+
+CREATE TABLE IF NOT EXISTS event_gate_metadata (
+    event_id          TEXT PRIMARY KEY REFERENCES event_log(event_id) ON DELETE CASCADE,
+    gate_id           TEXT NOT NULL,
+    phase             TEXT NOT NULL CHECK (phase IN ('entered', 'exited')),
+    step_name         TEXT NOT NULL CHECK (step_name IN ('intent', 'rebase', 'review', 'test', 'document', 'lint', 'push', 'pr', 'ci', 'unknown')),
+    gate_class        TEXT NOT NULL CHECK (gate_class IN ('approval', 'fix_review', 'unknown')),
+    outcome           TEXT CHECK (outcome IN ('approved', 'fix_requested', 'skipped', 'aborted', 'reconciled', 'cancelled', 'terminal', 'failed', 'unknown')),
+    wait_duration_ms  INTEGER CHECK (wait_duration_ms >= 0),
+    CHECK ((phase = 'entered' AND outcome IS NULL AND wait_duration_ms IS NULL) OR (phase = 'exited' AND outcome IS NOT NULL AND wait_duration_ms IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS event_ci_metadata (
+    event_id  TEXT PRIMARY KEY REFERENCES event_log(event_id) ON DELETE CASCADE,
+    state     TEXT NOT NULL CHECK (state IN ('running', 'green', 'failure', 'merge_wait', 'terminal')),
+    outcome   TEXT NOT NULL CHECK (outcome IN ('checks', 'passed', 'no_checks', 'merge_conflict', 'checks_and_merge_conflict', 'merged', 'closed', 'unknown')),
+    CHECK ((state = 'running' AND outcome IN ('checks', 'unknown'))
+        OR (state IN ('green', 'merge_wait') AND outcome IN ('passed', 'no_checks'))
+        OR (state = 'failure' AND outcome IN ('checks', 'merge_conflict', 'checks_and_merge_conflict'))
+        OR (state = 'terminal' AND outcome IN ('merged', 'closed')))
+);
+
+CREATE TABLE IF NOT EXISTS event_pr_metadata (
+    event_id  TEXT PRIMARY KEY REFERENCES event_log(event_id) ON DELETE CASCADE,
+    state     TEXT NOT NULL CHECK (state IN ('created', 'open', 'checks_wait', 'review_wait', 'merged', 'closed'))
+);
 
 -- Single-row retention watermark for the durable event log. purged_through is
 -- the highest sequence that retention has deleted, so a global subscriber's
@@ -206,11 +275,17 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN push_active INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN pr_state TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_state_observed_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN pr_activity TEXT`,
 	`ALTER TABLE runs ADD COLUMN ci_ready_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN ci_state TEXT`,
+	`ALTER TABLE runs ADD COLUMN ci_outcome TEXT`,
 	// Custody return is nullable: NULL means the pipeline still owns any
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN awaiting_agent_gate_id TEXT`,
+	`ALTER TABLE runs ADD COLUMN awaiting_agent_step TEXT`,
+	`ALTER TABLE runs ADD COLUMN awaiting_agent_class TEXT`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

@@ -182,6 +182,48 @@ func TestMetadataEventInfoHasNoContentField(t *testing.T) {
 	}
 }
 
+func TestMetadataEventInfoLifecycleMetadataIsTypedAndPreservesUnknownUsage(t *testing.T) {
+	zero := 0
+	info := MetadataEventInfo{
+		Sequence: 1, EventID: "event", Type: "io.no_mistakes.invocation.completed.v1",
+		PayloadSchema: "io.no_mistakes.invocation.completed.v1", PayloadVersion: 1,
+		ContentClass: "metadata", SourceTimestamp: 1, RecordedAt: 2,
+		Invocation: &InvocationEventInfo{
+			InvocationID: "invocation", Phase: "completed", Step: "review", Purpose: "review",
+			SessionMode: "cold", Outcome: "ok", Usage: &InvocationUsageInfo{InputTokens: &zero},
+		},
+	}
+	raw, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		t.Fatal(err)
+	}
+	var invocation map[string]json.RawMessage
+	if err := json.Unmarshal(shape["invocation"], &invocation); err != nil {
+		t.Fatal(err)
+	}
+	var usage map[string]json.RawMessage
+	if err := json.Unmarshal(invocation["usage"], &usage); err != nil {
+		t.Fatal(err)
+	}
+	if string(usage["input_tokens"]) != "0" {
+		t.Fatalf("reported real zero missing: %s", raw)
+	}
+	for _, unknown := range []string{"output_tokens", "cache_read_tokens", "reasoning_tokens"} {
+		if _, present := usage[unknown]; present {
+			t.Fatalf("unknown usage %q was fabricated: %s", unknown, raw)
+		}
+	}
+	for _, forbidden := range []string{"payload", "content", "data", "attributes", "error", "logs", "prompt", "diff", "url"} {
+		if _, present := invocation[forbidden]; present {
+			t.Fatalf("invocation metadata exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
 func TestSubscribeEventsParamsRoundTrip(t *testing.T) {
 	params := SubscribeEventsParams{
 		Version: SubscribeEventsVersion,
