@@ -28,6 +28,10 @@ type DB struct {
 	// stuck subscriber can never delay a database write. It carries no event
 	// data; a subscriber reads the durable row itself.
 	eventAppended atomic.Pointer[func(int64)]
+	// runTerminal is the O(1) wake-up seam for optional terminal-run
+	// projections. Like eventAppended it carries identity only and fires after
+	// commit, so observers can never participate in the durable write.
+	runTerminal atomic.Pointer[func(string)]
 }
 
 // SetEventAppendedHook registers (or clears, with nil) the post-commit metadata
@@ -44,6 +48,21 @@ func (d *DB) SetEventAppendedHook(fn func(int64)) {
 func (d *DB) fireEventAppended(sequence int64) {
 	if fn := d.eventAppended.Load(); fn != nil {
 		(*fn)(sequence)
+	}
+}
+
+// SetRunTerminalHook registers an optional post-commit terminal-run wake-up.
+func (d *DB) SetRunTerminalHook(fn func(string)) {
+	if fn == nil {
+		d.runTerminal.Store(nil)
+		return
+	}
+	d.runTerminal.Store(&fn)
+}
+
+func (d *DB) fireRunTerminal(runID string) {
+	if fn := d.runTerminal.Load(); fn != nil {
+		(*fn)(runID)
 	}
 }
 

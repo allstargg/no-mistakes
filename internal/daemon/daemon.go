@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
+	"github.com/kunchenguid/no-mistakes/internal/oteltrace"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -36,7 +38,10 @@ var cleanupMetadataEvents = func(ctx context.Context, database *db.DB, retention
 	return database.CleanupMetadataEvents(ctx, retention, reference, limit)
 }
 
-const metadataEventCleanupTimeout = 2 * time.Second
+const (
+	metadataEventCleanupTimeout = 2 * time.Second
+	nativeOTLPShutdownTimeout   = 2 * time.Second
+)
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
 // or the shutdown IPC method is called. This is called via the hidden
@@ -200,6 +205,20 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, eve
 
 	mgr := NewRunManager(d, p, stepFactory)
 
+	// Native OTLP is independently opt-in through the standard endpoint
+	// environment. Initialization, queueing, exporter errors, and shutdown are
+	// all best effort and can never become daemon or pipeline failures.
+	nativeOTLP := oteltrace.NewFromEnvironment(d, buildinfo.CurrentVersion())
+	d.SetRunTerminalHook(nativeOTLP.NotifyRun)
+	defer d.SetRunTerminalHook(nil)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), nativeOTLPShutdownTimeout)
+		defer cancel()
+		if err := nativeOTLP.Shutdown(ctx); err != nil {
+			slog.Warn("native OTLP shutdown incomplete", "reason", "shutdown_timeout_or_export_failure")
+		}
+	}()
+
 	// Global metadata-event subscribers (TW-37) are woken by an O(1) post-commit
 	// notification. It carries no event data and never blocks the append that
 	// fires it, so a slow subscriber cannot delay pipeline writes.
@@ -247,7 +266,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, eve
 		})
 	}
 
-	registerHandlers(srv, mgr, d, eventNotifier, func() { doShutdown("ipc request") })
+	registerHandlers(srv, mgr, d, eventNotifier, nativeOTLP, func() { doShutdown("ipc request") })
 
 	// Handle OS signals
 	sigCh := make(chan os.Signal, 1)
@@ -613,7 +632,7 @@ func migrateGateConfig(ctx context.Context, bareDir string) error {
 	return nil
 }
 
-func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, eventNotifier *eventNotifier, shutdown func()) {
+func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, eventNotifier *eventNotifier, nativeOTLP *oteltrace.Runtime, shutdown func()) {
 	classify := func(ctx context.Context, cwd string, markerPresent, skipManagedGit bool) (gatecontext.Result, error) {
 		return (gatecontext.Inspector{DB: d, Paths: mgr.paths}).Inspect(ctx, gatecontext.Request{
 			CWD:            cwd,
@@ -815,7 +834,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, eventNotifier 
 	// Capability discovery and the global metadata-event stream (TW-37). Both
 	// are read-only observability over the durable event log, so - like the
 	// per-run subscribe below - they are not gated by recursive containment.
-	srv.Handle(ipc.MethodCapabilities, handleCapabilities)
+	srv.Handle(ipc.MethodCapabilities, handleCapabilitiesWithOTLP(nativeOTLP))
 	srv.HandleStream(ipc.MethodSubscribeEvents, handleSubscribeEvents(d, eventNotifier))
 
 	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage) (ipc.StreamFunc, error) {

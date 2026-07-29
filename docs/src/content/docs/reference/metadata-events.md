@@ -75,6 +75,22 @@ No event includes check names, provider errors, logs, or URLs. Consecutive ident
 
 The PR URL remains in run state and is not copied into event metadata. Merged and closed observations are monotonic. A delayed open observation cannot regress a terminal state or emit another open fact.
 
+## Native OTLP projection
+
+When native OTLP is enabled, the daemon asynchronously projects a terminal run from these durable lifecycle owners rather than maintaining a second live state model. The approved Tracewake registry shape is deliberately small:
+
+- one `tracewake.no_mistakes.run` span with the run's source create/terminal timestamps, outcome, phase, and exact local run ID
+- child `tracewake.no_mistakes.step` spans from durable step start/completion timestamps and bounded step outcomes
+- `tracewake.firstmate.human_gate.wait` child spans paired by durable `gate_id`, with registered decision requested/resolved events
+- the registered `tracewake.ci.green` event and a content-free failed CI observation span where those authoritative CI facts exist
+- OpenTelemetry error status and a bounded failure category, never the stored raw error
+
+A valid incoming [`TRACEPARENT` and `TRACESTATE`](/no-mistakes/reference/environment/#traceparent-and-tracestate) becomes the remote parent with W3C sampling semantics preserved. Missing or invalid context creates an independent trace and never false parentage.
+
+No SDK span object remains open during pipeline work or across a daemon crash. A stale active run recovered after restart is projected as one completed failed logical run ending at the durable recovery transition. Stable span identities derived from durable run, step, gate, and event identities plus bounded process-local suppression reduce duplicate terminal export across retry and recovery, but native OTLP is intentionally not an exactly-once delivery broker. The durable event subscription remains the replay source for consumers that need cursor-based delivery.
+
+[Environment Variables](/no-mistakes/reference/environment/#native-otlp-trace-export) owns native OTLP configuration, bounds, capability health, and the metadata-only privacy contract. Invocation spans and GenAI/token metrics are not part of this projection.
+
 ## Transaction and replay behavior
 
 Lifecycle state and its describing events share the database transaction owned by `CommitWithEvent` / `CommitWithEvents` or the equivalent transition-guarded path:

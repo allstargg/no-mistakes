@@ -35,6 +35,11 @@ const (
 	// this build implements. A client requests it explicitly; a daemon that
 	// only knows a different version fails closed with a typed error.
 	SubscribeEventsVersion = 1
+
+	// CapabilityNativeOTLPTraces advertises the optional metadata-only native
+	// SDK exporter independently of the durable sidecar subscription.
+	CapabilityNativeOTLPTraces = "native_otlp_traces"
+	NativeOTLPTracesVersion    = 1
 )
 
 // Server-defined JSON-RPC error codes for global event subscription. They sit
@@ -98,9 +103,20 @@ type Capability struct {
 	Versions []int  `json:"versions"`
 }
 
+// NativeOTLPTraceHealth is bounded feature/config/health metadata. It exposes
+// no endpoint, headers, errors, credentials, or other caller-controlled text.
+type NativeOTLPTraceHealth struct {
+	Enabled        bool   `json:"enabled"`
+	State          string `json:"state"`
+	Protocol       string `json:"protocol,omitempty"`
+	QueueCapacity  int    `json:"queue_capacity,omitempty"`
+	ContentCapture bool   `json:"content_capture"`
+}
+
 // CapabilitiesResult lists the daemon's optional capabilities.
 type CapabilitiesResult struct {
-	Capabilities []Capability `json:"capabilities"`
+	Capabilities     []Capability           `json:"capabilities"`
+	NativeOTLPTraces *NativeOTLPTraceHealth `json:"native_otlp_traces,omitempty"`
 }
 
 // Supports reports whether the daemon advertises name at the given version.

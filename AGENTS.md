@@ -113,6 +113,12 @@ Safest local verification sequence after non-trivial changes:
 - Slow/idle/malicious consumers never block pipeline execution, DB writes, retention, or other subscribers: the streamer materializes each batch (releasing the single connection) before any socket write, and a bounded handoff disconnects a consumer that cannot drain within `eventStreamSlowGrace` (`errSlowEventConsumer`) — the backlog stays durable in the DB, so the client reconnects with its cursor to resync exactly once. Never reintroduce an unbounded in-memory queue or let a consumer hold the DB connection while sending. Scope is a prototype replay API only: no acknowledgements, consumer groups, content/query access, or network service.
 - Regressions: `internal/db/event_stream_test.go`, `internal/ipc/events_test.go`, `internal/ipc/events_client_test.go`, `internal/daemon/event_subscription_test.go` (notifier race, replay/resume/live, filter+checkpoint, slow-consumer disconnect, cursor expiry), e2e `TestEventSubscriptionJourney`.
 
+**Native OTLP Trace Projection (`internal/oteltrace`)**
+
+- Native OTLP is opt-in through standard HTTP/protobuf endpoint environment and reconstructs terminal run, step, gate, CI, and failure spans only from durable run/step/TW-34 facts. The DB terminal hook is identity-only, O(1), and post-commit; no SDK span object stays live during a pipeline or across daemon restart. Stable durable-derived span IDs and bounded process-local suppression reduce duplicate recovery/retry export without creating an exactly-once broker.
+- Export is metadata-only, bounded, asynchronous, and fail-independent. Never add prompts, responses, logs, diffs, files, command output, raw errors, arbitrary URLs, check names, tokens, secrets, caller-selected attributes, or content-capture controls. `internal/oteltrace/registry.go` owns the approved Tracewake names; `docs/src/content/docs/reference/environment.md` owns configuration, health, bounds, and privacy.
+- Regressions: `internal/oteltrace/runtime_test.go`, `internal/daemon/event_subscription_test.go`, e2e `TestNativeOTLPTraceJourney`.
+
 **Destructive Daemon Lifecycle Guard (`internal/lifecycle/guard.go`)**
 
 - `daemon stop`, `daemon restart`, and `update` refuse by default while pending/running runs exist (the daemon is machine-wide, so stopping it can fail every active pipeline), list the runs via the shared `lifecycle.ActiveRuns`/`lifecycle.RunList` helpers, and require an explicit `--force`. `update -y` answers only the different-executable prompt and deliberately does not bypass this guard.

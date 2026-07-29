@@ -84,7 +84,8 @@ When a push arrives via the post-receive hook:
 1. Creates a detached worktree at `~/.no-mistakes/worktrees/<repoID>/<runID>/`
 2. Starts the pipeline executor in that worktree
 3. Streams live events to any connected TUI clients, serves request/response state to AXI clients, and offers a durable, replayable global [metadata-event subscription](/no-mistakes/reference/metadata-events/) that a local consumer feature-detects and resumes from a cursor
-4. Cleans up the worktree when the run finishes (success or failure)
+4. When a standard OTLP endpoint is configured, asynchronously projects terminal lifecycle facts through an optional metadata-only [native OpenTelemetry exporter](/no-mistakes/reference/environment/#native-otlp-trace-export)
+5. Cleans up the worktree when the run finishes (success or failure)
 
 Pipeline agents are prompted to keep intentional writes inside that detached worktree and avoid changing system state outside it, such as Homebrew packages, apps under `/Applications`, or global tool configuration.
 That reduces surprising machine-level side effects and macOS App Management prompts, but it is prompt steering rather than a true sandbox.
@@ -119,6 +120,8 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Records a content-versioned gate configuration stamp only after the whole migration succeeds. Normal restarts check current stamped gates from the filesystem without rerunning the mutating Git commands
 - Clears any parked-awaiting-agent marker so a recovered failed run is not shown as still waiting for `axi respond`
 
+The optional native OTLP terminal hook is installed before recovery begins. Reconciled or failed stale runs can therefore be projected from their durable source facts, but no process-local span is treated as if it survived the crash. Export remains best effort and cannot change recovery state.
+
 ## Logging
 
 Daemon lifecycle logs go to `~/.no-mistakes/logs/daemon.log`. Startup logs report concise phase durations, gate migration counts, and a final `daemon ready` message only after IPC health succeeds. Successful read-only IPC requests such as health and run-state reads appear only at `debug`; mutations, stream starts, lifecycle transitions, and failed requests remain visible at `info` or `warn`.
@@ -143,3 +146,4 @@ containment rule.
 1. Cancels all active runs
 2. Waits up to 30 seconds for goroutines to finish
 3. Removes the PID file and socket
+4. Gives the optional native OTLP queue at most 2 seconds to stop and flush; timeout or exporter failure is logged as a bounded diagnostic and does not change daemon shutdown success

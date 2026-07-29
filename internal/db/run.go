@@ -146,8 +146,14 @@ func insertRunExec(ctx context.Context, exec sqlExecutor, r *Run) error {
 
 // GetRun returns a run by ID.
 func (d *DB) GetRun(id string) (*Run, error) {
+	return d.GetRunContext(context.Background(), id)
+}
+
+// GetRunContext is the cancellable form used by optional asynchronous
+// observers. Pipeline callers can keep using GetRun.
+func (d *DB) GetRunContext(ctx context.Context, id string) (*Run, error) {
 	r := &Run{}
-	err := scanRun(d.sql.QueryRow(`SELECT `+runColumns+` FROM runs WHERE id = ?`, id), r)
+	err := scanRun(d.sql.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id = ?`, id), r)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -253,6 +259,9 @@ func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
+	if terminalRunStatus(status) {
+		d.fireRunTerminal(id)
+	}
 	return nil
 }
 
@@ -348,6 +357,9 @@ func (d *DB) UpdateRunPRState(id, state string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("update run PR state: commit: %w", err)
 	}
+	if terminalPRState(state) {
+		d.fireRunTerminal(id)
+	}
 	return nil
 }
 
@@ -390,6 +402,9 @@ func (d *DB) ReconcileTerminalPRRuns() (int, error) {
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("reconcile terminal PR runs: commit: %w", err)
+	}
+	for _, id := range ids {
+		d.fireRunTerminal(id)
 	}
 	return len(ids), nil
 }
@@ -485,6 +500,9 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
+	}
+	if terminalRunStatus(status) {
+		d.fireRunTerminal(id)
 	}
 	return nil
 }
@@ -598,6 +616,29 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	defer tx.Rollback()
 
 	placeholders, args := recoveryExclusionClause(preserved)
+	rows, err := tx.Query(
+		`SELECT id FROM runs WHERE status IN (?, ?)`+placeholders,
+		append([]any{types.RunPending, types.RunRunning}, args...)...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("list stale runs: %w", err)
+	}
+	var recoveredIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan stale run: %w", err)
+		}
+		recoveredIDs = append(recoveredIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale runs: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("list stale runs: %w", err)
+	}
+
 	stepArgs := []any{
 		types.StepStatusFailed, errMsg, ts,
 		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
@@ -642,7 +683,14 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
+	for _, id := range recoveredIDs {
+		d.fireRunTerminal(id)
+	}
 	return int(count), nil
+}
+
+func terminalRunStatus(status types.RunStatus) bool {
+	return status == types.RunCompleted || status == types.RunFailed || status == types.RunCancelled
 }
 
 func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {

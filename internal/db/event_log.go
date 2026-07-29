@@ -302,6 +302,48 @@ func (d *DB) ReadMetadataEvents(ctx context.Context, afterSequence int64, limit 
 	return events, nil
 }
 
+// ReadRecentMetadataEventsForRun returns the newest bounded set of lifecycle
+// facts for one run in ascending source-log order. It is an internal projection
+// primitive for optional metadata observers, not a new IPC query surface.
+func (d *DB) ReadRecentMetadataEventsForRun(ctx context.Context, runID string, limit int) ([]*MetadataEvent, error) {
+	if !validBoundedID(runID) || limit <= 0 || limit > MaxMetadataEventReadBatch {
+		return nil, ErrInvalidMetadataEventRead
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT sequence, event_id, source_timestamp, event_type, payload_schema,
+		       payload_version, content_class, run_id, traceparent, tracestate, recorded_at
+		FROM event_log
+		WHERE run_id = ?
+		ORDER BY sequence DESC
+		LIMIT ?`, runID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read run metadata events: %w", err)
+	}
+	events := make([]*MetadataEvent, 0, limit)
+	for rows.Next() {
+		event, err := scanMetadataEvent(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("read run metadata events: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("read run metadata events: close: %w", err)
+	}
+	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+		events[left], events[right] = events[right], events[left]
+	}
+	if err := d.loadLifecycleMetadata(ctx, events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func scanMetadataEvent(row interface{ Scan(...any) error }) (*MetadataEvent, error) {
 	var event MetadataEvent
 	var sourceTimestamp string
