@@ -200,6 +200,13 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, eve
 
 	mgr := NewRunManager(d, p, stepFactory)
 
+	// Global metadata-event subscribers (TW-37) are woken by an O(1) post-commit
+	// notification. It carries no event data and never blocks the append that
+	// fires it, so a slow subscriber cannot delay pipeline writes.
+	eventNotifier := newEventNotifier()
+	d.SetEventAppendedHook(eventNotifier.notify)
+	defer d.SetEventAppendedHook(nil)
+
 	cleanupMetadataEventLog(d, eventLogRetention)
 
 	// Publish process identity as soon as the singleton lock is held. Startup
@@ -240,7 +247,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, eve
 		})
 	}
 
-	registerHandlers(srv, mgr, d, func() { doShutdown("ipc request") })
+	registerHandlers(srv, mgr, d, eventNotifier, func() { doShutdown("ipc request") })
 
 	// Handle OS signals
 	sigCh := make(chan os.Signal, 1)
@@ -606,7 +613,7 @@ func migrateGateConfig(ctx context.Context, bareDir string) error {
 	return nil
 }
 
-func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func()) {
+func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, eventNotifier *eventNotifier, shutdown func()) {
 	classify := func(ctx context.Context, cwd string, markerPresent, skipManagedGit bool) (gatecontext.Result, error) {
 		return (gatecontext.Inspector{DB: d, Paths: mgr.paths}).Inspect(ctx, gatecontext.Request{
 			CWD:            cwd,
@@ -804,6 +811,12 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		}
 		return &ipc.CancelRunResult{OK: true}, nil
 	})
+
+	// Capability discovery and the global metadata-event stream (TW-37). Both
+	// are read-only observability over the durable event log, so - like the
+	// per-run subscribe below - they are not gated by recursive containment.
+	srv.Handle(ipc.MethodCapabilities, handleCapabilities)
+	srv.HandleStream(ipc.MethodSubscribeEvents, handleSubscribeEvents(d, eventNotifier))
 
 	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage) (ipc.StreamFunc, error) {
 		var p ipc.SubscribeParams

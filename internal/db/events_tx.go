@@ -103,6 +103,7 @@ func (d *DB) CommitWithEvent(ctx context.Context, input MetadataEventInput, muta
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit with event: commit: %w", err)
 	}
+	d.fireEventAppended(event.Sequence)
 	return event, nil
 }
 

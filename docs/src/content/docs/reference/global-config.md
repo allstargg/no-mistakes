@@ -281,6 +281,10 @@ Cleanup uses the event's local acceptance time rather than its source timestamp,
 This setting governs only the durable metadata event foundation.
 The prototype does not accept content events or arbitrary JSON payloads.
 
+A local single-owner consumer can subscribe to this log globally over the daemon IPC socket without knowing any run IDs, and resume from a durable monotonic cursor after a disconnect or a daemon restart.
+Retention bounds how far back a resume can reach: a cursor that points below the highest sequence this setting has already removed returns a typed cursor-expired result, so the consumer resyncs from the retained backlog instead of silently missing events.
+The subscription streams the same metadata-only events and adds no content, payload, or query access.
+
 ### log_level
 
 Daemon log verbosity.
