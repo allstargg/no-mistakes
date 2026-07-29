@@ -32,6 +32,11 @@ import (
 var applyShellEnvToProcess = shellenv.ApplyToProcess
 var createDaemonPIDTempFile = os.CreateTemp
 var renameDaemonPIDFile = os.Rename
+var cleanupMetadataEvents = func(ctx context.Context, database *db.DB, retention time.Duration, reference time.Time, limit int) (int64, error) {
+	return database.CleanupMetadataEvents(ctx, retention, reference, limit)
+}
+
+const metadataEventCleanupTimeout = 2 * time.Second
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
 // or the shutdown IPC method is called. This is called via the hidden
@@ -89,7 +94,7 @@ func Run() (retErr error) {
 	defer d.Close()
 	logStartupPhase("database", databaseStarted)
 
-	return runWithOptionsLocked(p, d, nil, startupStarted)
+	return runWithOptionsLocked(p, d, nil, globalCfg.EventLogRetention, startupStarted)
 }
 
 func prepareDaemonEnvironment() error {
@@ -170,10 +175,10 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	}
 	defer lock.Release()
 
-	return runWithOptionsLocked(p, d, stepFactory, startupStarted)
+	return runWithOptionsLocked(p, d, stepFactory, config.DefaultEventLogRetention, startupStarted)
 }
 
-func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, startupStarted time.Time) error {
+func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, eventLogRetention time.Duration, startupStarted time.Time) error {
 	managedServerLog, err := logstore.Open(p.ManagedServerLog(), logstore.ManagedServerPolicy())
 	if err != nil {
 		return fmt.Errorf("open managed server log: %w", err)
@@ -194,6 +199,8 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	defer agent.SetServerPIDsDir("")
 
 	mgr := NewRunManager(d, p, stepFactory)
+
+	cleanupMetadataEventLog(d, eventLogRetention)
 
 	// Publish process identity as soon as the singleton lock is held. Startup
 	// callers can now distinguish a launched child from IPC readiness and detect
@@ -280,6 +287,19 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	}
 	slog.Info("daemon stopped")
 	return nil
+}
+
+func cleanupMetadataEventLog(database *db.DB, retention time.Duration) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), metadataEventCleanupTimeout)
+	defer cancel()
+	deleted, err := cleanupMetadataEvents(ctx, database, retention, time.Now().UTC(), db.MaxMetadataEventCleanupBatch)
+	if err != nil {
+		slog.Warn("metadata event retention cleanup skipped", "reason", db.MetadataEventDiagnosticCleanupFailed)
+		logStartupPhase("event_log_cleanup", started, "failed", true)
+		return
+	}
+	logStartupPhase("event_log_cleanup", started, "deleted", deleted)
 }
 
 func confirmLocalIPCHealth(p *paths.Paths, timeout time.Duration) error {
