@@ -193,7 +193,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			stream, err := streamHandler(ctx, req.Params)
 			if err != nil {
 				slog.Warn("ipc stream request failed", "method", req.Method, "error", err)
-				_ = encoder.Encode(NewErrorResponse(req.ID, ErrInternal, err.Error()))
+				_ = encoder.Encode(errorResponseFor(req.ID, err))
 				return
 			}
 			slog.Info("ipc stream request", "method", req.Method)
@@ -245,7 +245,7 @@ func (s *Server) dispatch(ctx context.Context, req Request) *Response {
 	result, err := handler(ctx, req.Params)
 	if err != nil {
 		slog.Warn("ipc request failed", "method", req.Method, "error", err)
-		return NewErrorResponse(req.ID, ErrInternal, err.Error())
+		return errorResponseFor(req.ID, err)
 	}
 
 	resp, err := NewResponse(req.ID, result)
@@ -261,13 +261,25 @@ func (s *Server) dispatch(ctx context.Context, req Request) *Response {
 	return resp
 }
 
+// errorResponseFor builds an error response, honoring a handler-chosen JSON-RPC
+// code (via the RPCCode method on CodedError) so typed outcomes such as an
+// expired cursor survive the transport instead of collapsing to ErrInternal.
+func errorResponseFor(id int64, err error) *Response {
+	code := ErrInternal
+	var coder interface{ RPCCode() int }
+	if errors.As(err, &coder) {
+		code = coder.RPCCode()
+	}
+	return NewErrorResponse(id, code, err.Error())
+}
+
 // readOnlyMethod is the single request-log policy for successful RPCs that
 // only inspect daemon state. They can be called by health checks, dashboards,
 // and recovery heartbeats without amplifying the lifecycle log. Failed reads
 // still take the WARN path above.
 func readOnlyMethod(method string) bool {
 	switch method {
-	case MethodHealth, MethodGetRun, MethodGetRuns, MethodGetRunsForHead, MethodGetActiveRun, MethodGateContext, MethodAdmitPush:
+	case MethodHealth, MethodGetRun, MethodGetRuns, MethodGetRunsForHead, MethodGetActiveRun, MethodGateContext, MethodAdmitPush, MethodCapabilities:
 		return true
 	default:
 		return false

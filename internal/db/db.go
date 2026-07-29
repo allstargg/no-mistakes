@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -21,6 +22,29 @@ var (
 // DB wraps a SQLite database connection.
 type DB struct {
 	sql *sql.DB
+	// eventAppended, when set, is invoked with the new sequence after a metadata
+	// event commits. It is the wake-up seam for global event subscribers (TW-37)
+	// and must be O(1) and independent of any consumer's state, so a slow or
+	// stuck subscriber can never delay a database write. It carries no event
+	// data; a subscriber reads the durable row itself.
+	eventAppended atomic.Pointer[func(int64)]
+}
+
+// SetEventAppendedHook registers (or clears, with nil) the post-commit metadata
+// event notification. The hook fires after the event's transaction has already
+// committed, never while a lock or transaction is held.
+func (d *DB) SetEventAppendedHook(fn func(int64)) {
+	if fn == nil {
+		d.eventAppended.Store(nil)
+		return
+	}
+	d.eventAppended.Store(&fn)
+}
+
+func (d *DB) fireEventAppended(sequence int64) {
+	if fn := d.eventAppended.Load(); fn != nil {
+		(*fn)(sequence)
+	}
 }
 
 // Open opens (or creates) the SQLite database at path and runs migrations.

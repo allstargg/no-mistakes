@@ -60,6 +60,19 @@ CREATE INDEX IF NOT EXISTS idx_event_log_run_sequence
 CREATE INDEX IF NOT EXISTS idx_event_log_recorded_sequence
     ON event_log (recorded_at, sequence);
 
+-- Single-row retention watermark for the durable event log. purged_through is
+-- the highest sequence that retention has deleted, so a global subscriber's
+-- resume cursor strictly below it can be answered with a typed cursor-expired
+-- error instead of silently skipping history that no longer exists. A legacy
+-- database seeds it at 0; no cursor client predates this table, so an
+-- under-reported watermark on an old database cannot strand a real consumer.
+CREATE TABLE IF NOT EXISTS event_log_state (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    purged_through INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO event_log_state (id, purged_through) VALUES (1, 0);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

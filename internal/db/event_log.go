@@ -99,7 +99,12 @@ func (d *DB) appendMetadataEventAt(ctx context.Context, input MetadataEventInput
 	if err := validateMetadataEventInput(input); err != nil {
 		return nil, err
 	}
-	return appendMetadataEventTx(ctx, d.sql, input, recordedAt)
+	event, err := appendMetadataEventTx(ctx, d.sql, input, recordedAt)
+	if err != nil {
+		return nil, err
+	}
+	d.fireEventAppended(event.Sequence)
+	return event, nil
 }
 
 // appendMetadataEventTx inserts one validated metadata event through exec,
@@ -334,17 +339,36 @@ func (d *DB) CleanupMetadataEvents(ctx context.Context, retention time.Duration,
 	}()
 
 	cutoff := reference.UTC().Add(-retention).UnixMilli()
-	result, err := conn.ExecContext(ctx, `
-		DELETE FROM event_log
-		WHERE sequence IN (
-			SELECT event.sequence
-			FROM event_log AS event
-			LEFT JOIN runs AS run ON run.id = event.run_id
-			WHERE event.recorded_at < ?
-			  AND (event.run_id IS NULL OR run.id IS NULL OR run.status NOT IN (?, ?))
-			ORDER BY event.sequence ASC
-			LIMIT ?
-		)`,
+
+	// Persist the highest deleted sequence as the retention watermark inside the
+	// same transaction as the delete. A global subscriber (TW-37) resuming with a
+	// cursor strictly below the watermark is answered with a typed cursor-expired
+	// error rather than silently skipping the events retention removed. The
+	// MAX-of-the-eligible-set query and the DELETE share one predicate and one
+	// transaction, so the watermark is exactly the largest sequence deleted.
+	const eligibleSet = `
+		SELECT event.sequence
+		FROM event_log AS event
+		LEFT JOIN runs AS run ON run.id = event.run_id
+		WHERE event.recorded_at < ?
+		  AND (event.run_id IS NULL OR run.id IS NULL OR run.status NOT IN (?, ?))
+		ORDER BY event.sequence ASC
+		LIMIT ?`
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup metadata events: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var maxDeleted sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(sequence) FROM (`+eligibleSet+`)`,
+		cutoff, types.RunPending, types.RunRunning, limit,
+	).Scan(&maxDeleted); err != nil {
+		return 0, fmt.Errorf("cleanup metadata events: scan watermark: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM event_log WHERE sequence IN (`+eligibleSet+`)`,
 		cutoff, types.RunPending, types.RunRunning, limit,
 	)
 	if err != nil {
@@ -354,5 +378,46 @@ func (d *DB) CleanupMetadataEvents(ctx context.Context, retention time.Duration,
 	if err != nil {
 		return 0, fmt.Errorf("cleanup metadata events: rows affected: %w", err)
 	}
+	if maxDeleted.Valid && maxDeleted.Int64 > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE event_log_state SET purged_through = ? WHERE id = 1 AND purged_through < ?`,
+			maxDeleted.Int64, maxDeleted.Int64,
+		); err != nil {
+			return 0, fmt.Errorf("cleanup metadata events: advance watermark: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("cleanup metadata events: commit: %w", err)
+	}
 	return deleted, nil
+}
+
+// PurgedThroughSequence returns the retention watermark: the highest event
+// sequence that CleanupMetadataEvents has ever deleted (0 if none). A global
+// subscriber resuming with a cursor strictly below this value is missing
+// history that no longer exists and must resync (the ipc layer maps this to a
+// typed cursor-expired error).
+func (d *DB) PurgedThroughSequence(ctx context.Context) (int64, error) {
+	var watermark int64
+	err := d.sql.QueryRowContext(ctx, `SELECT purged_through FROM event_log_state WHERE id = 1`).Scan(&watermark)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read event retention watermark: %w", err)
+	}
+	return watermark, nil
+}
+
+// LatestEventSequence returns the highest assigned event sequence (0 when the
+// log is empty). It lets a subscriber bound its initial catch-up read.
+func (d *DB) LatestEventSequence(ctx context.Context) (int64, error) {
+	var latest sql.NullInt64
+	if err := d.sql.QueryRowContext(ctx, `SELECT MAX(sequence) FROM event_log`).Scan(&latest); err != nil {
+		return 0, fmt.Errorf("read latest event sequence: %w", err)
+	}
+	if !latest.Valid {
+		return 0, nil
+	}
+	return latest.Int64, nil
 }
