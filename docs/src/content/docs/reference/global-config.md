@@ -38,6 +38,8 @@ step_quiet_warning: "10m"
 
 daemon_connect_timeout: "3s"
 
+event_log_retention: "720h"
+
 log_level: info
 
 session_reuse: true
@@ -261,6 +263,23 @@ Maximum time a CLI client waits for an existing daemon socket to accept a connec
 | Default | `3s`                   |
 
 Accepts any positive Go `time.ParseDuration` string. Overridable per-invocation with the `NM_DAEMON_CONNECT_TIMEOUT` environment variable; see [Environment Variables](/no-mistakes/reference/environment/#nm_daemon_connect_timeout).
+
+### event_log_retention
+
+How long the local metadata-only event log retains events after they are accepted.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `720h` (30 days)       |
+
+The value must be a positive Go duration such as `168h` or `720h`.
+At daemon startup, cleanup removes at most 1,000 expired events in ascending sequence order and stops after that one batch, so a large backlog is reduced incrementally across starts.
+Events linked to a `pending` or `running` run are never removed, even when they are older than the retention window.
+Cleanup uses the event's local acceptance time rather than its source timestamp, and a cleanup failure is reported with a bounded value-free diagnostic without preventing the daemon or pipeline from continuing.
+
+This setting governs only the durable metadata event foundation.
+The prototype does not accept content events or arbitrary JSON payloads.
 
 ### log_level
 

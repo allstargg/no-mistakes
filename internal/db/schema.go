@@ -39,6 +39,27 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS event_log (
+    sequence         INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id         TEXT NOT NULL UNIQUE,
+    source_timestamp TEXT NOT NULL,
+    event_type       TEXT NOT NULL,
+    payload_schema   TEXT NOT NULL,
+    payload_version  INTEGER NOT NULL CHECK (payload_version > 0),
+    content_class    TEXT NOT NULL DEFAULT 'metadata' CHECK (content_class = 'metadata'),
+    run_id           TEXT,
+    traceparent      TEXT,
+    tracestate       TEXT,
+    recorded_at      INTEGER NOT NULL,
+    CHECK (tracestate IS NULL OR traceparent IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_log_run_sequence
+    ON event_log (run_id, sequence);
+
+CREATE INDEX IF NOT EXISTS idx_event_log_recorded_sequence
+    ON event_log (recorded_at, sequence);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
