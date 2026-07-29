@@ -83,7 +83,7 @@ When a push arrives via the post-receive hook:
 
 1. Creates a detached worktree at `~/.no-mistakes/worktrees/<repoID>/<runID>/`
 2. Starts the pipeline executor in that worktree
-3. Streams live events to any connected TUI clients, serves request/response state to AXI clients, and offers a durable, replayable global metadata-event subscription that a local consumer feature-detects and resumes from a cursor (see [`event_log_retention`](/no-mistakes/reference/global-config/#event_log_retention))
+3. Streams live events to any connected TUI clients, serves request/response state to AXI clients, and offers a durable, replayable global [metadata-event subscription](/no-mistakes/reference/metadata-events/) that a local consumer feature-detects and resumes from a cursor
 4. Cleans up the worktree when the run finishes (success or failure)
 
 Pipeline agents are prompted to keep intentional writes inside that detached worktree and avoid changing system state outside it, such as Homebrew packages, apps under `/Applications`, or global tool configuration.

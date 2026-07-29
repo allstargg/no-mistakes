@@ -50,14 +50,22 @@ type MetadataPayloadSchema string
 
 // MetadataEventInput is the narrow append contract for prototype events. It
 // intentionally has no payload, map, raw JSON, or caller-selected content
-// class. Later typed lifecycle payloads can extend this seam without creating
-// a generic content dumping channel.
+// class. Private family pointers let this package attach fixed typed lifecycle
+// metadata without exposing a generic content dumping channel.
 type MetadataEventInput struct {
 	SourceTimestamp time.Time
 	Type            MetadataEventType
 	PayloadSchema   MetadataPayloadSchema
 	PayloadVersion  int
 	RunID           string
+
+	// Family metadata is private so external callers cannot turn the event log
+	// into a generic attribute channel. Only typed lifecycle constructors in
+	// this package can populate one of these fixed metadata shapes.
+	invocation *InvocationEventMetadata
+	gate       *GateEventMetadata
+	ci         *CIEventMetadata
+	pr         *PREventMetadata
 }
 
 // MetadataEvent is one durable source event ordered by Sequence.
@@ -72,6 +80,10 @@ type MetadataEvent struct {
 	RunID           *string
 	TraceContext    *tracecontext.Context
 	RecordedAt      time.Time
+	Invocation      *InvocationEventMetadata
+	Gate            *GateEventMetadata
+	CI              *CIEventMetadata
+	PR              *PREventMetadata
 }
 
 // MetadataEventDiagnostic is a bounded, value-free failure reason safe for
@@ -99,9 +111,17 @@ func (d *DB) appendMetadataEventAt(ctx context.Context, input MetadataEventInput
 	if err := validateMetadataEventInput(input); err != nil {
 		return nil, err
 	}
-	event, err := appendMetadataEventTx(ctx, d.sql, input, recordedAt)
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("append metadata event: begin: %w", err)
+	}
+	defer tx.Rollback()
+	event, err := appendMetadataEventTx(ctx, tx, input, recordedAt)
 	if err != nil {
 		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("append metadata event: commit: %w", err)
 	}
 	d.fireEventAppended(event.Sequence)
 	return event, nil
@@ -184,6 +204,13 @@ func appendMetadataEventTx(ctx context.Context, exec sqlExecutor, input Metadata
 		return nil, fmt.Errorf("append metadata event: read sequence: %w", err)
 	}
 	event.Sequence = sequence
+	if err := insertLifecycleMetadata(ctx, exec, event.EventID, input); err != nil {
+		return nil, fmt.Errorf("append lifecycle metadata: %w", err)
+	}
+	event.Invocation = input.invocation
+	event.Gate = input.gate
+	event.CI = input.ci
+	event.PR = input.pr
 	return event, nil
 }
 
@@ -204,7 +231,7 @@ func validateMetadataEventInput(input MetadataEventInput) error {
 	if !metadataVersionMatches(string(input.PayloadSchema), input.PayloadVersion, MaxMetadataPayloadSchemaBytes, metadataPayloadSchemaPattern) {
 		return ErrInvalidMetadataEvent
 	}
-	return nil
+	return validateLifecycleMetadata(input)
 }
 
 func metadataVersionMatches(value string, version, maxBytes int, pattern *regexp.Regexp) bool {
@@ -250,7 +277,6 @@ func (d *DB) ReadMetadataEvents(ctx context.Context, afterSequence int64, limit 
 	if err != nil {
 		return nil, fmt.Errorf("read metadata events: %w", err)
 	}
-	defer rows.Close()
 
 	events := make([]*MetadataEvent, 0, limit)
 	for rows.Next() {
@@ -261,7 +287,17 @@ func (d *DB) ReadMetadataEvents(ctx context.Context, afterSequence int64, limit 
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return nil, fmt.Errorf("read metadata events: %w", err)
+	}
+	// Release the single pooled connection before loading fixed family metadata.
+	// Holding rows open while issuing the detail queries would deadlock because
+	// DB intentionally caps the pool at one connection.
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("read metadata events: close: %w", err)
+	}
+	if err := d.loadLifecycleMetadata(ctx, events); err != nil {
+		return nil, err
 	}
 	return events, nil
 }

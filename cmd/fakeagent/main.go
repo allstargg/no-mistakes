@@ -101,7 +101,11 @@ func runGhForkPRStub(args []string) int {
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
 		if hasArgValue(args, "--json", "state") {
-			fmt.Println("MERGED")
+			if stateFile := os.Getenv("FAKEAGENT_GH_STATE_FILE"); stateFile != "" {
+				fmt.Println(nextGhPRState(stateFile))
+			} else {
+				fmt.Println("MERGED")
+			}
 			return 0
 		}
 		if hasArgValue(args, "--json", "mergeable") {
@@ -110,12 +114,48 @@ func runGhForkPRStub(args []string) int {
 		}
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "checks" {
-		fmt.Println("[]")
+		if checksFile := os.Getenv("FAKEAGENT_GH_CHECKS_FILE"); checksFile != "" {
+			fmt.Println(nextGhChecks(checksFile))
+		} else if os.Getenv("FAKEAGENT_GH_CHECKS") == "passed" {
+			fmt.Println(`[{"name":"test","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-29T00:00:00Z"}]`)
+		} else {
+			fmt.Println("[]")
+		}
 		return 0
 	}
 
 	fmt.Fprintf(os.Stderr, "fakeagent gh fork-pr: subcommand not implemented: %v\n", args)
 	return 1
+}
+
+// nextGhPRState returns OPEN for the first two state observations and MERGED
+// after that. The file makes the sequence durable across separate gh stub
+// processes without adding a network dependency. Two open polls let the
+// lifecycle E2E observe checks running and then the review/merge wait.
+func nextGhPRState(path string) string {
+	count := 0
+	if raw, err := os.ReadFile(path); err == nil {
+		_, _ = fmt.Sscanf(strings.TrimSpace(string(raw)), "%d", &count)
+	}
+	count++
+	_ = os.WriteFile(path, []byte(fmt.Sprintf("%d\n", count)), 0o600)
+	if count <= 2 {
+		return "OPEN"
+	}
+	return "MERGED"
+}
+
+func nextGhChecks(path string) string {
+	count := 0
+	if raw, err := os.ReadFile(path); err == nil {
+		_, _ = fmt.Sscanf(strings.TrimSpace(string(raw)), "%d", &count)
+	}
+	count++
+	_ = os.WriteFile(path, []byte(fmt.Sprintf("%d\n", count)), 0o600)
+	if count == 1 {
+		return `[{"name":"test","state":"IN_PROGRESS","bucket":"pending","completedAt":""}]`
+	}
+	return `[{"name":"test","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-29T00:00:00Z"}]`
 }
 
 func recordGhStubInvocation(args []string) {

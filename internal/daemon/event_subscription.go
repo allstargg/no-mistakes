@@ -273,8 +273,8 @@ func checkpointFrame(sequence int64) ipc.EventStreamFrame {
 }
 
 // metadataEventInfo projects a durable event onto its metadata-only wire form.
-// It copies only classification and correlation fields; there is no content or
-// payload to leak because the storage row has none.
+// It copies the common envelope and fixed typed family metadata. Storage and
+// wire types expose no generic content, payload, map, or free-form text field.
 func metadataEventInfo(event *db.MetadataEvent) *ipc.MetadataEventInfo {
 	info := &ipc.MetadataEventInfo{
 		Sequence:        event.Sequence,
@@ -290,6 +290,41 @@ func metadataEventInfo(event *db.MetadataEvent) *ipc.MetadataEventInfo {
 	if event.RunID != nil {
 		runID := *event.RunID
 		info.RunID = &runID
+	}
+	if event.Invocation != nil {
+		m := event.Invocation
+		info.Invocation = &ipc.InvocationEventInfo{
+			InvocationID: m.InvocationID, Phase: m.Phase, Step: m.Step, Purpose: m.Purpose,
+			SessionMode: m.SessionMode, Outcome: m.Outcome, FailureCategory: m.FailureCategory, DurationMS: m.DurationMS,
+		}
+		if m.Usage != nil {
+			info.Invocation.Usage = &ipc.InvocationUsageInfo{
+				InputTokens: m.Usage.InputTokens, OutputTokens: m.Usage.OutputTokens, CacheReadTokens: m.Usage.CacheReadTokens,
+				CacheCreationTokens: m.Usage.CacheCreationTokens, FreshInputTokens: m.Usage.FreshInputTokens, ReasoningTokens: m.Usage.ReasoningTokens,
+				DeltaInputTokens: m.Usage.DeltaInputTokens, DeltaOutputTokens: m.Usage.DeltaOutputTokens, DeltaCacheReadTokens: m.Usage.DeltaCacheReadTokens,
+			}
+		}
+		if m.Activity != nil {
+			info.Invocation.Activity = &ipc.InvocationActivityInfo{
+				ModelRoundtrips: m.Activity.ModelRoundtrips, ToolCalls: m.Activity.ToolCalls, ToolWaitCalls: m.Activity.ToolWaitCalls,
+				ToolTestLintCalls: m.Activity.ToolTestLintCalls, ToolEditCalls: m.Activity.ToolEditCalls, ToolReadCalls: m.Activity.ToolReadCalls,
+				ToolGitCalls: m.Activity.ToolGitCalls, ToolOtherCalls: m.Activity.ToolOtherCalls, WorkloadFiles: m.Activity.WorkloadFiles,
+				WorkloadLines: m.Activity.WorkloadLines, FindingCount: m.Activity.FindingCount,
+			}
+		}
+	}
+	if event.Gate != nil {
+		m := event.Gate
+		info.Gate = &ipc.GateEventInfo{
+			GateID: m.GateID, Phase: m.Phase, Step: m.Step, Class: m.Class,
+			Outcome: m.Outcome, WaitDurationMS: m.WaitDurationMS,
+		}
+	}
+	if event.CI != nil {
+		info.CI = &ipc.CIEventInfo{State: event.CI.State, Outcome: event.CI.Outcome}
+	}
+	if event.PR != nil {
+		info.PR = &ipc.PREventInfo{State: event.PR.State}
 	}
 	return info
 }
