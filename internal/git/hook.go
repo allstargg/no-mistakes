@@ -189,6 +189,10 @@ while read oldrev newrev refname; do
       printf '%s\n' "$out"
       printf 'See %s for full history.\n' "$LOG"
     } >&2
+  elif [ -n "$out" ]; then
+    # Successful notify-push output is reserved for bounded, value-free
+    # diagnostics such as rejected optional trace context.
+    printf '%s\n' "$out" >&2
   fi
 done
 

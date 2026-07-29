@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -495,13 +496,17 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 	}
 }
 
-func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+func TestRerunParamsIncludeSkipStepsIntentAndTraceContext(t *testing.T) {
+	traceCtx := &tracecontext.Context{Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", traceCtx)
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
 	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
 		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+	if params.TraceContext != traceCtx {
+		t.Fatalf("TraceContext = %#v, want %#v", params.TraceContext, traceCtx)
 	}
 }
 

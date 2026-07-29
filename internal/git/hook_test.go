@@ -204,7 +204,7 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 
 	argsPath := filepath.Join(base, "args.txt")
 	fakeBin := filepath.Join(base, "fake-no-mistakes")
-	fakeScript := "#!/bin/sh\nprintf '%s\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nexit 0\n"
+	fakeScript := "#!/bin/sh\nprintf '%s\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nprintf '%s\n' 'no-mistakes: ignored incoming trace context: traceparent is malformed' >&2\nexit 0\n"
 	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -218,12 +218,18 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	cmd := exec.Command("/bin/sh", hookPath)
 	cmd.Dir = bare
 	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
+	traceOption := "no-mistakes.traceparent=00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	cmd.Env = append(os.Environ(),
-		"GIT_PUSH_OPTION_COUNT=1",
+		"GIT_PUSH_OPTION_COUNT=2",
 		"GIT_PUSH_OPTION_0=ok; touch "+markerPath,
+		"GIT_PUSH_OPTION_1="+traceOption,
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("run hook: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "ignored incoming trace context") {
+		t.Fatalf("hook swallowed successful bounded diagnostic:\n%s", out)
 	}
 
 	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
@@ -235,6 +241,9 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	}
 	if !strings.Contains(string(args), "ok; touch "+markerPath) {
 		t.Fatalf("hook should forward push option literally, got:\n%s", args)
+	}
+	if !strings.Contains(string(args), traceOption) {
+		t.Fatalf("hook should forward allowlisted trace option literally, got:\n%s", args)
 	}
 }
 

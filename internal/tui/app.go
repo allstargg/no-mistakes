@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -20,6 +22,7 @@ type Model struct {
 	cancelSub      func()
 	runID          string
 	subscriptionID uint64
+	traceContext   *tracecontext.Context
 
 	// State.
 	run                 *ipc.RunInfo
@@ -72,6 +75,10 @@ type Model struct {
 // NewModel creates a TUI model for the given run.
 // The client should already be connected to the daemon.
 func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
+	return newModelWithTraceContext(socketPath, client, run, nil)
+}
+
+func newModelWithTraceContext(socketPath string, client *ipc.Client, run *ipc.RunInfo, traceCtx *tracecontext.Context) Model {
 	syntheticSteps := len(run.Steps) == 0 && shouldBackfillPipelineSteps(run.Status, run.Steps, types.AllSteps())
 	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps)
 	run.Steps = steps
@@ -80,6 +87,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		client:              client,
 		runID:               run.ID,
 		subscriptionID:      1,
+		traceContext:        traceCtx,
 		run:                 run,
 		done:                run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled,
 		steps:               steps,
@@ -332,7 +340,7 @@ func (m *Model) resetForRun(run *ipc.RunInfo) {
 	width, height := m.width, m.height
 	nextSubscriptionID := m.subscriptionID + 1
 	latestVersion := m.latestVersion
-	fresh := NewModel(m.socketPath, m.client, run)
+	fresh := newModelWithTraceContext(m.socketPath, m.client, run, m.traceContext)
 	fresh.width = width
 	fresh.height = height
 	fresh.subscriptionID = nextSubscriptionID
@@ -358,7 +366,11 @@ func (m *Model) refreshCachedSync() {
 // by the human and AXI commands. Opening the TUI performs cached inspection
 // only and never contacts a remote.
 func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion string) error {
-	model := NewModel(socketPath, client, run)
+	traceResult := tracecontext.FromEnvironment(os.Getenv)
+	for _, diagnostic := range traceResult.Diagnostics {
+		fmt.Fprintf(os.Stderr, "no-mistakes: ignored incoming trace context: %s\n", diagnostic)
+	}
+	model := newModelWithTraceContext(socketPath, client, run, traceResult.Context)
 	model.latestVersion = latestVersion
 	if service, closeFn, err := branchsync.OpenCurrent(); err == nil {
 		defer closeFn()

@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -124,6 +125,8 @@ func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
 }
 
 func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
+	traceparent := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	tracestate := "tracewake=prototype"
 	sock := testSocketPath(t)
 	srv := startTestIPCServer(t, sock)
 
@@ -139,6 +142,9 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 		}
 		if params.RepoID != "repo-001" || params.Branch != "feature/foo" {
 			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
+		}
+		if params.TraceContext == nil || params.TraceContext.Traceparent != traceparent || params.TraceContext.Tracestate != tracestate {
+			return nil, fmt.Errorf("missing typed trace context: %#v", params.TraceContext)
 		}
 		return &ipc.RerunResult{RunID: newRun.ID}, nil
 	})
@@ -172,7 +178,7 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunFailed
 	run.Error = ptr("push failed")
-	m := NewModel(sock, client, run)
+	m := newModelWithTraceContext(sock, client, run, &tracecontext.Context{Traceparent: traceparent, Tracestate: tracestate})
 	m.width = 80
 	m.height = 24
 	m.err = errors.New("old error")

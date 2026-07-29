@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -107,5 +109,61 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
+	}
+}
+
+func TestTraceContextPushOptionsRoundTrip(t *testing.T) {
+	want := &tracecontext.Context{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "tracewake=prototype,vendor=opaque",
+	}
+	options := append([]string{"no-mistakes.skip=test", "unrelated=value"}, formatTraceContextPushOptions(want)...)
+	result := parseTraceContextPushOptions(options)
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("parse diagnostics = %v, want none", result.Diagnostics)
+	}
+	if !reflect.DeepEqual(result.Context, want) {
+		t.Fatalf("parsed context = %#v, want %#v", result.Context, want)
+	}
+}
+
+func TestTraceContextPushOptionsIgnoreInvalidUnsupportedAndOversizedValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		options []string
+	}{
+		{name: "invalid", options: []string{"no-mistakes.traceparent=invalid"}},
+		{name: "unsupported baggage", options: []string{"no-mistakes.baggage=authorization=secret"}},
+		{name: "duplicate", options: []string{
+			"no-mistakes.traceparent=00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			"no-mistakes.traceparent=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+		}},
+		{name: "oversized", options: []string{"no-mistakes.traceparent=" + strings.Repeat("a", tracecontext.MaxTraceparentBytes+1)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseTraceContextPushOptions(tt.options)
+			if result.Context != nil {
+				t.Fatalf("invalid context was accepted: %#v", result.Context)
+			}
+			if len(result.Diagnostics) == 0 {
+				t.Fatal("invalid context should produce a bounded diagnostic")
+			}
+			for _, diagnostic := range result.Diagnostics {
+				if len(diagnostic.String()) > 96 || strings.Contains(diagnostic.String(), "secret") {
+					t.Fatalf("unsafe diagnostic: %q", diagnostic)
+				}
+			}
+		})
+	}
+}
+
+func TestTraceContextPushOptionsDoNotInventGenericMetadataCarrier(t *testing.T) {
+	result := parseTraceContextPushOptions([]string{
+		"no-mistakes.metadata=arbitrary",
+		"no-mistakes.trace-id=0123456789abcdef",
+	})
+	if result.Context != nil || len(result.Diagnostics) != 0 {
+		t.Fatalf("generic metadata affected trace context: %#v", result)
 	}
 }

@@ -118,7 +118,7 @@ When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
 fires. It resolves the gate to an absolute bare-repo path using Git's own view
 of the repository, falling back to the hook location if needed, then calls
 `no-mistakes daemon notify-push` with that gate path, ref name, old/new SHAs,
-and any Git push options such as `no-mistakes.skip=test,lint`.
+and allowlisted Git push options such as `no-mistakes.skip=test,lint` or validated W3C `no-mistakes.traceparent` and `no-mistakes.tracestate` values.
 For compatibility with older managed hooks, `notify-push` also normalizes
 relative gate paths before handing them to the daemon.
 The post-receive hook never blocks an already admitted push - Git ignores its
@@ -184,6 +184,7 @@ An agent-supplied AXI intent is stored directly on the run.
 Raw transcript text is not stored in this database.
 Legacy `user_fix` rounds are still read as `auto-fix` for backward compatibility.
 Run records also store the nullable `awaiting_agent_since` timestamp used only to render the AXI parked signal while a gate is waiting for the driving agent, plus accumulated `parked_ms` for local performance reporting.
+A valid incoming W3C traceparent and optional tracestate are stored as nullable run fields and returned by run IPC reads so later instrumentation can construct a parent span after a daemon restart. Legacy, standalone, and rejected-context runs keep both fields null and therefore remain independent.
 Each agent invocation records local-only purpose, provider/model metadata, session mode and a truncated session-identity hash, timing, failure category, and token usage; prompts, outputs, diffs, and credentials are never stored there.
 Use `no-mistakes stats --agents` for aggregates or `no-mistakes stats --run <id>` for a run timeline and parked time.
 Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.

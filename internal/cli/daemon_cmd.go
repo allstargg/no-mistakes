@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/tracecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -106,6 +107,8 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			traceResult := parseTraceContextPushOptions(pushOptions)
+			emitTraceContextDiagnostics(cmd.ErrOrStderr(), traceResult.Diagnostics)
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -124,12 +127,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:         gatePath,
+				Ref:          ref,
+				Old:          oldSHA,
+				New:          newSHA,
+				SkipSteps:    skipSteps,
+				Intent:       intent,
+				TraceContext: traceResult.Context,
 			}, &result)
 		},
 	}
@@ -219,6 +223,66 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+const (
+	traceparentPushOptionPrefix = "no-mistakes.traceparent="
+	tracestatePushOptionPrefix  = "no-mistakes.tracestate="
+	baggagePushOptionPrefix     = "no-mistakes.baggage="
+)
+
+func formatTraceContextPushOptions(traceCtx *tracecontext.Context) []string {
+	validated := tracecontext.Validate(traceCtx)
+	if validated.Context == nil {
+		return nil
+	}
+	options := []string{traceparentPushOptionPrefix + validated.Context.Traceparent}
+	if validated.Context.Tracestate != "" {
+		options = append(options, tracestatePushOptionPrefix+validated.Context.Tracestate)
+	}
+	return options
+}
+
+// parseTraceContextPushOptions reads only the explicit traceparent and
+// tracestate allowlist. Recognized invalid, duplicate, oversized, or baggage
+// values produce bounded diagnostics but never fail push notification.
+func parseTraceContextPushOptions(options []string) tracecontext.Result {
+	var traceparent, tracestate string
+	var parentSeen, stateSeen bool
+	var diagnostics []tracecontext.Diagnostic
+	for _, option := range options {
+		switch {
+		case strings.HasPrefix(option, traceparentPushOptionPrefix):
+			if parentSeen {
+				return tracecontext.Result{Diagnostics: []tracecontext.Diagnostic{tracecontext.DiagnosticTraceparentDuplicate}}
+			}
+			parentSeen = true
+			traceparent = strings.TrimPrefix(option, traceparentPushOptionPrefix)
+		case strings.HasPrefix(option, tracestatePushOptionPrefix):
+			if stateSeen {
+				return tracecontext.Result{Diagnostics: []tracecontext.Diagnostic{tracecontext.DiagnosticTracestateDuplicate}}
+			}
+			stateSeen = true
+			tracestate = strings.TrimPrefix(option, tracestatePushOptionPrefix)
+		case strings.HasPrefix(option, baggagePushOptionPrefix):
+			diagnostics = append(diagnostics, tracecontext.DiagnosticBaggageUnsupported)
+		}
+	}
+	result := tracecontext.Parse(traceparent, tracestate)
+	result.Diagnostics = append(result.Diagnostics, diagnostics...)
+	return result
+}
+
+func incomingTraceContext(w io.Writer) *tracecontext.Context {
+	result := tracecontext.FromEnvironment(os.Getenv)
+	emitTraceContextDiagnostics(w, result.Diagnostics)
+	return result.Context
+}
+
+func emitTraceContextDiagnostics(w io.Writer, diagnostics []tracecontext.Diagnostic) {
+	for _, diagnostic := range diagnostics {
+		fmt.Fprintf(w, "no-mistakes: ignored incoming trace context: %s\n", diagnostic)
+	}
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

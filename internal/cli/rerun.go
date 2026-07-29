@@ -46,8 +46,9 @@ func newRerunCmd() *cobra.Command {
 				}
 				defer client.Close()
 
+				traceCtx := incomingTraceContext(cmd.ErrOrStderr())
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, TraceContext: traceCtx}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
