@@ -52,48 +52,41 @@ func TestTraceContextJourney(t *testing.T) {
 		t.Fatalf("get_run trace context = %#v, want traceparent=%q tracestate=%q", persisted.TraceContext, traceparent, tracestate)
 	}
 
-	// TW-33 provides the typed durable seam but deliberately does not emit
-	// lifecycle coverage (TW-34). Append one representative event explicitly,
-	// reopen storage, and prove sequence plus run/trace linkage survive.
-	store, err := db.Open(paths.WithRoot(h.NMHome).DB())
-	if err != nil {
-		t.Fatalf("open event store: %v", err)
-	}
-	event, err := store.AppendMetadataEvent(context.Background(), db.MetadataEventInput{
-		SourceTimestamp: time.Now().UTC(),
-		Type:            db.MetadataEventType("io.no_mistakes.run.completed.v1"),
-		PayloadSchema:   db.MetadataPayloadSchema("io.no_mistakes.run.v1"),
-		PayloadVersion:  1,
-		RunID:           run.ID,
-	})
-	if err != nil {
-		_ = store.Close()
-		t.Fatalf("append representative metadata event: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("close event store: %v", err)
-	}
-
+	// TW-36 couples in-scope run/step/gate/invocation mutations with a metadata
+	// event in one transaction, so a real completed run leaves durable events.
+	// Reopen storage and prove the pipeline's own events survived and stay
+	// mutually consistent with committed state and the run's TW-38 trace.
 	reopened, err := db.OpenReadOnly(paths.WithRoot(h.NMHome).DB())
 	if err != nil {
 		t.Fatalf("reopen event store read-only: %v", err)
 	}
 	defer reopened.Close()
-	events, err := reopened.ReadMetadataEvents(context.Background(), 0, 10)
+	events, err := reopened.ReadMetadataEvents(context.Background(), 0, db.MaxMetadataEventReadBatch)
 	if err != nil {
 		t.Fatalf("read metadata events after reopen: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("metadata events after reopen = %d, want 1", len(events))
+	// A completed run creates itself and starts at least one step, so it emits
+	// more than a single event through the coupled transaction boundary.
+	if len(events) < 2 {
+		t.Fatalf("pipeline metadata events after reopen = %d, want >= 2", len(events))
 	}
-	got := events[0]
-	if got.EventID != event.EventID || got.Sequence != event.Sequence {
-		t.Fatalf("metadata event identity = %#v, want %#v", got, event)
+	runCreated := 0
+	for _, got := range events {
+		// Every event maps to committed state and carries this run's trace.
+		if got.RunID == nil || *got.RunID != run.ID {
+			t.Fatalf("metadata event %s run linkage = %v, want %q", got.Type, got.RunID, run.ID)
+		}
+		if r, err := reopened.GetRun(*got.RunID); err != nil || r == nil {
+			t.Fatalf("metadata event %s claims run %q that did not commit: %v", got.Type, run.ID, err)
+		}
+		if got.TraceContext == nil || got.TraceContext.Traceparent != traceparent || got.TraceContext.Tracestate != tracestate {
+			t.Fatalf("metadata event %s trace linkage = %#v", got.Type, got.TraceContext)
+		}
+		if got.Type == db.EventTypeRunCreated {
+			runCreated++
+		}
 	}
-	if got.RunID == nil || *got.RunID != run.ID {
-		t.Fatalf("metadata event run linkage = %v, want %q", got.RunID, run.ID)
-	}
-	if got.TraceContext == nil || got.TraceContext.Traceparent != traceparent || got.TraceContext.Tracestate != tracestate {
-		t.Fatalf("metadata event trace linkage = %#v", got.TraceContext)
+	if runCreated != 1 {
+		t.Fatalf("run.created events = %d, want exactly 1", runCreated)
 	}
 }

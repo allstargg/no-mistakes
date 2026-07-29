@@ -83,10 +83,14 @@ const (
 	MetadataEventDiagnosticCleanupFailed MetadataEventDiagnostic = "metadata_event_cleanup_failed"
 )
 
-// AppendMetadataEvent appends one validated metadata-only event. A linked
-// event copies the run's already-persisted TW-38 trace context so correlation
-// survives daemon and storage restarts. State writes are intentionally not
-// transaction-coupled here; that boundary belongs to TW-36.
+// AppendMetadataEvent appends one validated metadata-only event on its own
+// connection. A linked event copies the run's already-persisted TW-38 trace
+// context so correlation survives daemon and storage restarts.
+//
+// This standalone form commits the event by itself. TW-36 in-scope mutations
+// that must commit state and their describing event atomically use
+// CommitWithEvent instead, which runs the same append inside the state
+// transaction (see events_tx.go).
 func (d *DB) AppendMetadataEvent(ctx context.Context, input MetadataEventInput) (*MetadataEvent, error) {
 	return d.appendMetadataEventAt(ctx, input, time.Now().UTC())
 }
@@ -95,6 +99,15 @@ func (d *DB) appendMetadataEventAt(ctx context.Context, input MetadataEventInput
 	if err := validateMetadataEventInput(input); err != nil {
 		return nil, err
 	}
+	return appendMetadataEventTx(ctx, d.sql, input, recordedAt)
+}
+
+// appendMetadataEventTx inserts one validated metadata event through exec,
+// which is either the shared *sql.DB or an open *sql.Tx. Running it against a
+// transaction is what lets CommitWithEvent commit a state mutation and its
+// describing event as one unit. The caller is responsible for having already
+// run validateMetadataEventInput on input.
+func appendMetadataEventTx(ctx context.Context, exec sqlExecutor, input MetadataEventInput, recordedAt time.Time) (*MetadataEvent, error) {
 	if recordedAt.IsZero() {
 		return nil, ErrInvalidMetadataEvent
 	}
@@ -114,7 +127,7 @@ func (d *DB) appendMetadataEventAt(ctx context.Context, input MetadataEventInput
 	var tracestate any
 	if input.RunID != "" {
 		var storedTraceparent, storedTracestate sql.NullString
-		err := d.sql.QueryRowContext(ctx,
+		err := exec.QueryRowContext(ctx,
 			`SELECT traceparent, tracestate FROM runs WHERE id = ?`, input.RunID,
 		).Scan(&storedTraceparent, &storedTracestate)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -142,7 +155,7 @@ func (d *DB) appendMetadataEventAt(ctx context.Context, input MetadataEventInput
 		runID = linkedRunID
 	}
 
-	result, err := d.sql.ExecContext(ctx, `
+	result, err := exec.ExecContext(ctx, `
 		INSERT INTO event_log
 			(event_id, source_timestamp, event_type, payload_schema, payload_version,
 			 content_class, run_id, traceparent, tracestate, recorded_at)
@@ -201,10 +214,10 @@ func metadataVersionMatches(value string, version, maxBytes int, pattern *regexp
 	return err == nil && parsed == version
 }
 
-// AppendMetadataEventBestEffort is the fail-independent prototype seam for
+// AppendMetadataEventBestEffort is the fail-independent seam for out-of-scope
 // callers whose primary state transition must continue if event persistence
-// fails. The strict AppendMetadataEvent method remains available for TW-36's
-// future transactional integration.
+// fails. In-scope TW-36 mutations do NOT use this path; they use
+// CommitWithEvent so state and event share one transaction (events_tx.go).
 func (d *DB) AppendMetadataEventBestEffort(ctx context.Context, input MetadataEventInput) (*MetadataEvent, MetadataEventDiagnostic) {
 	event, err := d.AppendMetadataEvent(ctx, input)
 	if err == nil {

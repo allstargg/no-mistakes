@@ -652,9 +652,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		slog.Warn("ignored incoming trace context", "trigger", trigger, "reason", diagnostic.String())
 	}
 
-	// Create the run and its valid parent atomically. A nil parent remains the
-	// independent-trace case for downstream instrumentation.
-	run, err := m.db.InsertRunWithTraceContext(repo.ID, branch, headSHA, baseSHA, traceResult.Context)
+	// Create the run, its valid parent, and the run-created metadata event
+	// atomically (TW-36). A nil parent remains the independent-trace case for
+	// downstream instrumentation.
+	run, err := m.db.InsertRunWithEvent(ctx, repo.ID, branch, headSHA, baseSHA, traceResult.Context)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)

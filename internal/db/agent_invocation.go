@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // Agent invocation session modes recorded for local performance telemetry.
 const (
@@ -137,7 +140,18 @@ const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?,
 // fields are stored as SQL NULL (database/sql dereferences non-nil pointers).
 func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error) {
 	inv.ID = newID()
-	_, err := d.sql.Exec(
+	if err := insertAgentInvocationExec(context.Background(), d.sql, inv); err != nil {
+		return nil, err
+	}
+	return &inv, nil
+}
+
+// insertAgentInvocationExec writes one already-identified invocation through
+// exec, so the plain InsertAgentInvocation and the event-coupled
+// InsertAgentInvocationWithEvent persist an identical row. The caller assigns
+// inv.ID before calling.
+func insertAgentInvocationExec(ctx context.Context, exec sqlExecutor, inv AgentInvocation) error {
+	_, err := exec.ExecContext(ctx,
 		`INSERT INTO agent_invocations (`+agentInvocationColumns+`)
 		 VALUES (`+agentInvocationInsertPlaceholders+`)`,
 		inv.ID, inv.RunID, inv.StepName, inv.Round, inv.Purpose, inv.Agent, inv.Model, inv.ModelProvider,
@@ -151,9 +165,9 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 		inv.WorkloadFiles, inv.WorkloadLines, inv.FindingCount,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("insert agent invocation: %w", err)
+		return fmt.Errorf("insert agent invocation: %w", err)
 	}
-	return &inv, nil
+	return nil
 }
 
 // GetAgentInvocationsByRun returns a run's invocations in execution order.

@@ -572,8 +572,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		autoFixLimit = e.config.AutoFixLimit(stepName)
 	}
 
-	// Mark step as running
-	if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+	// Mark step as running, committing the step row and its step-started
+	// metadata event atomically (TW-36).
+	if err := e.db.StartStepWithEvent(ctx, run.ID, sr.ID, autoFixLimit); err != nil {
 		return false, fmt.Errorf("start step %s: %w", stepName, err)
 	}
 	e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
@@ -857,7 +858,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// tell in one `axi status` read that the run is waiting for the agent
 		// to drive this gate (versus actively running/fixing/ci). Observability
 		// only: it does not change the wait below. Cleared once the wait ends.
-		if dbErr := e.db.SetRunAwaitingAgent(run.ID); dbErr != nil {
+		if dbErr := e.db.SetRunAwaitingAgentWithEvent(ctx, run.ID); dbErr != nil {
 			slog.Warn("failed to set awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
 		}
 
