@@ -407,6 +407,9 @@ func (d *DB) UpdateRunPRStateWithEvent(ctx context.Context, runID string, observ
 		return fmt.Errorf("update run PR lifecycle: commit: %w", err)
 	}
 	d.fireLifecycleEvents(events)
+	if terminalPRState(string(next)) {
+		d.fireRunTerminal(runID)
+	}
 	return nil
 }
 

@@ -66,7 +66,13 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 
 // GetStepsByRun returns all step results for a run, in execution order.
 func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
-	rows, err := d.sql.Query(
+	return d.GetStepsByRunContext(context.Background(), runID)
+}
+
+// GetStepsByRunContext is the cancellable form used by optional asynchronous
+// observers. Pipeline callers can keep using GetStepsByRun.
+func (d *DB) GetStepsByRunContext(ctx context.Context, runID string) ([]*StepResult, error) {
+	rows, err := d.sql.QueryContext(ctx,
 		`SELECT `+stepResultColumns+` FROM step_results WHERE run_id = ? ORDER BY step_order`, runID,
 	)
 	if err != nil {

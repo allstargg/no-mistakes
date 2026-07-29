@@ -436,6 +436,12 @@ func TestHandleCapabilitiesAdvertisesSubscribeEvents(t *testing.T) {
 	if !caps.Supports(ipc.CapabilitySubscribeEvents, ipc.SubscribeEventsVersion) {
 		t.Fatalf("capabilities = %#v, want subscribe_events v%d", caps.Capabilities, ipc.SubscribeEventsVersion)
 	}
+	if !caps.Supports(ipc.CapabilityNativeOTLPTraces, ipc.NativeOTLPTracesVersion) {
+		t.Fatalf("capabilities = %#v, want native OTLP traces v%d", caps.Capabilities, ipc.NativeOTLPTracesVersion)
+	}
+	if caps.NativeOTLPTraces == nil || caps.NativeOTLPTraces.State != "disabled" || caps.NativeOTLPTraces.ContentCapture {
+		t.Fatalf("native OTLP health = %#v, want disabled metadata-only", caps.NativeOTLPTraces)
+	}
 }
 
 func TestHandleSubscribeEventsRejectsUnsupportedVersion(t *testing.T) {

@@ -56,6 +56,26 @@ git push \
 
 `BAGGAGE` and `no-mistakes.baggage` are not accepted. No arbitrary metadata, authorization values, or sensitive baggage is carried with a run. Invalid, duplicate, oversized, unsupported, and baggage values are ignored without blocking the pipeline, with a bounded diagnostic that never includes the rejected value.
 
+## Native OTLP trace export
+
+No-mistakes can export terminal run lifecycle traces through the standard OpenTelemetry OTLP HTTP/protobuf exporter. It is opt-in: with neither endpoint variable set, no SDK, exporter, projection worker, or network client is created.
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Generic HTTP(S) collector base URL; no-mistakes appends `/v1/traces` | unset |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace-specific HTTP(S) URL used exactly as supplied; takes precedence over the generic endpoint | unset |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Generic OTLP protocol | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Trace-specific protocol; takes precedence over the generic protocol | `http/protobuf` |
+| `OTEL_SDK_DISABLED` | `true` disables native OTLP even when an endpoint is present | unset |
+
+Only `http/protobuf` and an absolute `http` or `https` URL are accepted. Embedded URL user information, query strings, fragments, and malformed configuration leave export disabled with `misconfigured` health. The upstream HTTP exporter also consumes its standard header, compression, and TLS certificate variables. Export has fixed local safety bounds instead of configurable unbounded queues or retries: a 256-span non-blocking queue, batches of at most 64 spans, 1-second per-request and retry-elapsed budgets, and a 2-second daemon-shutdown budget.
+
+The daemon reads this configuration at startup, so restart it after changing the variables, subject to the [active-run lifecycle guard](/no-mistakes/concepts/daemon/#starting-and-stopping). Use the daemon's `capabilities` IPC response to feature-detect `native_otlp_traces` version `1` and inspect its fixed-shape `enabled`, `state`, `protocol`, `queue_capacity`, and always-false `content_capture` fields. Health states are `disabled`, `ready`, `degraded`, `misconfigured`, and `stopped`; no endpoint, header, credential, or raw exporter error is exposed.
+
+Export is metadata-only and reconstructed asynchronously after a run becomes terminal from the existing durable run, step, gate, CI, and failure facts. The payload can contain the exact local run ID for trace correlation plus approved bounded Tracewake attributes. It never contains prompts, responses, logs, diffs, files, command output, raw errors, arbitrary URLs, check names, tokens, or secrets, and there is no content-capture opt-in. Queue pressure, collector outage, malformed configuration, exporter failure, and flush timeout do not affect pipeline execution or durable lifecycle writes.
+
+Native OTLP is independent of both the replayable [metadata-event subscription](/no-mistakes/reference/metadata-events/) and anonymous Umami product telemetry. `NO_MISTAKES_TELEMETRY` controls Umami only and does not enable or disable native OTLP.
+
 ## `NO_MISTAKES_BITBUCKET_EMAIL`
 
 Bitbucket Cloud account email used for PR creation and CI monitoring.

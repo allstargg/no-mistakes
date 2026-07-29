@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/oteltrace"
 )
 
 // This file implements the daemon side of TW-37's global metadata-event
@@ -77,9 +78,34 @@ func (n *eventNotifier) subscribe() <-chan struct{} {
 // handleCapabilities advertises the optional capabilities this daemon
 // implements so a client can select global mode only when supported.
 func handleCapabilities(_ context.Context, _ json.RawMessage) (interface{}, error) {
-	return &ipc.CapabilitiesResult{Capabilities: []ipc.Capability{
-		{Name: ipc.CapabilitySubscribeEvents, Versions: []int{ipc.SubscribeEventsVersion}},
-	}}, nil
+	return capabilitiesResult(nil), nil
+}
+
+func handleCapabilitiesWithOTLP(runtime *oteltrace.Runtime) ipc.HandlerFunc {
+	return func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return capabilitiesResult(runtime), nil
+	}
+}
+
+func capabilitiesResult(runtime *oteltrace.Runtime) *ipc.CapabilitiesResult {
+	health := oteltrace.Health{}
+	if runtime != nil {
+		health = runtime.Health()
+	}
+	state := string(health.State)
+	if state == "" {
+		state = "disabled"
+	}
+	return &ipc.CapabilitiesResult{
+		Capabilities: []ipc.Capability{
+			{Name: ipc.CapabilitySubscribeEvents, Versions: []int{ipc.SubscribeEventsVersion}},
+			{Name: ipc.CapabilityNativeOTLPTraces, Versions: []int{ipc.NativeOTLPTracesVersion}},
+		},
+		NativeOTLPTraces: &ipc.NativeOTLPTraceHealth{
+			Enabled: health.Enabled, State: state, Protocol: health.Protocol,
+			QueueCapacity: health.QueueCapacity, ContentCapture: false,
+		},
+	}
 }
 
 // handleSubscribeEvents validates the typed request and prepares the stream.

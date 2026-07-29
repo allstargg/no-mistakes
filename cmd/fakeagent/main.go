@@ -128,10 +128,11 @@ func runGhForkPRStub(args []string) int {
 	return 1
 }
 
-// nextGhPRState returns OPEN for the first two state observations and MERGED
-// after that. The file makes the sequence durable across separate gh stub
-// processes without adding a network dependency. Two open polls let the
-// lifecycle E2E observe checks running and then the review/merge wait.
+// nextGhPRState returns OPEN long enough for the configured checks journey,
+// then MERGED. The file makes the sequence durable across separate gh stub
+// processes without adding a network dependency. A fail-first checks journey
+// uses one extra open observation so its fix round persists green before
+// terminal reconciliation.
 func nextGhPRState(path string) string {
 	count := 0
 	if raw, err := os.ReadFile(path); err == nil {
@@ -139,7 +140,11 @@ func nextGhPRState(path string) string {
 	}
 	count++
 	_ = os.WriteFile(path, []byte(fmt.Sprintf("%d\n", count)), 0o600)
-	if count <= 2 {
+	openPolls := 2
+	if os.Getenv("FAKEAGENT_GH_CHECKS_FAIL_FIRST") == "1" {
+		openPolls = 3
+	}
+	if count <= openPolls {
 		return "OPEN"
 	}
 	return "MERGED"
@@ -153,6 +158,9 @@ func nextGhChecks(path string) string {
 	count++
 	_ = os.WriteFile(path, []byte(fmt.Sprintf("%d\n", count)), 0o600)
 	if count == 1 {
+		if os.Getenv("FAKEAGENT_GH_CHECKS_FAIL_FIRST") == "1" {
+			return `[{"name":"test","state":"FAILURE","bucket":"fail","completedAt":"2026-07-29T00:00:00Z"}]`
+		}
 		return `[{"name":"test","state":"IN_PROGRESS","bucket":"pending","completedAt":""}]`
 	}
 	return `[{"name":"test","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-29T00:00:00Z"}]`
